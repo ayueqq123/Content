@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.session
+*.session-journal
+*.session-wal
+*.session-shm
+config.json
+.env
+sessions/
+accounts/
+dist/
+build/
+*.spec
+*.egg-info/
+.venv/
+venv/

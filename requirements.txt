@@ -1,0 +1,9 @@
+PyQt6>=6.5
+aiogram>=3.0,<4.0
+telethon>=1.34
+aiohttp-socks>=0.8
+pysocks>=1.7
+python-dotenv>=1.0
+qasync>=0.27
+httpx>=0.24.0
+pyinstaller>=6.0
