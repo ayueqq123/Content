@@ -8,7 +8,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
 
 from license.hwid import get_hwid
-from license.activator import activate_key, get_license_info
+from license.activator import activate_key, get_license_info, LICENSE_SERVER_URL
 
 
 class ActivateDialog(QDialog):
@@ -16,7 +16,7 @@ class ActivateDialog(QDialog):
         super().__init__(parent)
         self._cfg = cfg
         self.setWindowTitle("卡密激活")
-        self.setFixedSize(480, 280)
+        self.setFixedSize(500, 320)
         self.setWindowFlags(
             self.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint
         )
@@ -29,6 +29,16 @@ class ActivateDialog(QDialog):
         title.setFont(QFont("", 14, QFont.Weight.Bold))
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
+
+        # Server status
+        if LICENSE_SERVER_URL:
+            server_label = QLabel(f"验证服务器: {LICENSE_SERVER_URL}")
+            server_label.setStyleSheet("color: #888; font-size: 11px;")
+        else:
+            server_label = QLabel("⚠ 未配置验证服务器 (LICENSE_SERVER_URL)")
+            server_label.setStyleSheet("color: orange; font-size: 11px;")
+        server_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(server_label)
 
         # HWID display
         hwid = get_hwid()
@@ -55,11 +65,11 @@ class ActivateDialog(QDialog):
         info = get_license_info(cfg)
         if info.get("activated"):
             self.info_label = QLabel(
-                f"✅ 已激活 | 到期: {info.get('expiry', '未知')}"
+                f"已激活 | 到期: {info.get('expiry', '未知')}"
             )
             self.info_label.setStyleSheet("color: green; font-weight: bold;")
         else:
-            self.info_label = QLabel("❌ 未激活")
+            self.info_label = QLabel("未激活")
             self.info_label.setStyleSheet("color: red; font-weight: bold;")
         layout.addWidget(self.info_label)
 
@@ -93,11 +103,19 @@ class ActivateDialog(QDialog):
             QMessageBox.warning(self, "提示", "请输入卡密")
             return
 
+        self.activate_btn.setEnabled(False)
+        self.activate_btn.setText("验证中...")
+
         result = activate_key(key, self._cfg)
+
+        self.activate_btn.setEnabled(True)
+        self.activate_btn.setText("激活")
+
         if result["valid"]:
-            self.info_label.setText(f"✅ 激活成功!")
+            self.info_label.setText("激活成功!")
             self.info_label.setStyleSheet("color: green; font-weight: bold;")
             QMessageBox.information(self, "激活成功", "卡密激活成功，欢迎使用！")
             self.accept()
         else:
-            QMessageBox.warning(self, "激活失败", result.get("message", "激活失败"))
+            msg = result.get("message", "激活失败")
+            QMessageBox.warning(self, "激活失败", msg)
