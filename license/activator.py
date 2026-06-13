@@ -1,130 +1,162 @@
-"""License activation and validation.
+"""License activation and validation — remote-first mode.
 
-Supports two modes:
-  1. Local validation — key is checked against a simple hash + HWID binding
-  2. Remote validation — key is verified via an HTTP API (configurable endpoint)
+The client always talks to a remote license server for activation and
+periodic heartbeat checks.  A local cache allows the app to start in
+offline scenarios (within a grace period).
+
+Set LICENSE_SERVER_URL to your deployed server, e.g.:
+    LICENSE_SERVER_URL = "http://your-vps:8900"
 """
 
-import hashlib
 import time
 import logging
+import hashlib
 from datetime import datetime
 
 from license.hwid import get_hwid
 
 logger = logging.getLogger(__name__)
 
-# Set your remote license server URL here (empty = local-only mode)
+# ── Configuration ─────────────────────────────────────────────────
+# Point this to your deployed license server
 LICENSE_SERVER_URL = ""
 
-# Local secret used for offline key generation / validation
-# In production, replace this with your own secret
-_LOCAL_SECRET = "TGBotDesktop2024SecretKey"
+# How long (seconds) the app can run on cached license when offline
+OFFLINE_GRACE_SECONDS = 3600  # 1 hour
+
+# Signature secret — must match between builds; prevents trivial config edits
+_SIGN_SECRET = "TGBot2024LicSign"
 
 
-def _hash_key(key: str, hwid: str) -> str:
-    raw = f"{key}|{hwid}|{_LOCAL_SECRET}"
+# ── Helpers ───────────────────────────────────────────────────────
+
+def _sign_cache(key: str, hwid: str, expiry: str) -> str:
+    raw = f"{key}|{hwid}|{expiry}|{_SIGN_SECRET}"
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
-def generate_license_key(days: int = 30, prefix: str = "TG") -> str:
-    """Generate a license key (for the seller/admin to use).
-
-    Format: PREFIX-XXXXXXXX-DAYS
-    """
-    import secrets
-    rand = secrets.token_hex(4).upper()
-    return f"{prefix}-{rand}-{days}D"
-
-
-def validate_license_local(key: str, stored_hwid: str, stored_expiry: str) -> dict:
-    """Validate a license key locally."""
-    current_hwid = get_hwid()
-
-    if stored_hwid and stored_hwid != current_hwid:
-        return {"valid": False, "message": "卡密已绑定其他设备"}
-
-    if stored_expiry:
-        try:
-            expiry_ts = float(stored_expiry)
-            if time.time() > expiry_ts:
-                return {"valid": False, "message": "卡密已过期"}
-        except ValueError:
-            pass
-
-    if not key:
-        return {"valid": False, "message": "请输入卡密"}
-
-    return {"valid": True, "message": "激活成功", "hwid": current_hwid}
+def _verify_cache(cfg) -> bool:
+    key = cfg.get("license_key", "")
+    hwid = cfg.get("license_hwid", "")
+    expiry = cfg.get("license_expiry", "")
+    sig = cfg.get("license_sig", "")
+    if not key or not sig:
+        return False
+    return sig == _sign_cache(key, hwid, expiry)
 
 
-async def validate_license_remote(key: str) -> dict:
-    """Validate a license key against a remote server."""
+def _save_license_cache(cfg, key: str, hwid: str, expiry: str):
+    cfg.set("license_key", key)
+    cfg.set("license_hwid", hwid)
+    cfg.set("license_expiry", expiry)
+    cfg.set("license_sig", _sign_cache(key, hwid, expiry))
+    cfg.set("license_last_check", str(time.time()))
+    cfg.save()
+
+
+# ── Remote calls (synchronous via httpx) ──────────────────────────
+
+def _remote_activate(key: str, hwid: str) -> dict:
+    if not LICENSE_SERVER_URL:
+        return {"valid": False, "message": "未配置远程验证服务器 (LICENSE_SERVER_URL)"}
+
+    import httpx
+    try:
+        with httpx.Client(timeout=15) as client:
+            resp = client.post(
+                f"{LICENSE_SERVER_URL}/api/activate",
+                json={"key": key, "hwid": hwid},
+            )
+            return resp.json()
+    except Exception as e:
+        logger.error(f"Remote activate failed: {e}")
+        return {"valid": False, "message": f"网络请求失败: {e}"}
+
+
+def _remote_check(key: str, hwid: str) -> dict:
     if not LICENSE_SERVER_URL:
         return {"valid": False, "message": "未配置远程验证服务器"}
 
-    hwid = get_hwid()
+    import httpx
     try:
-        import httpx
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.post(
-                LICENSE_SERVER_URL,
+        with httpx.Client(timeout=10) as client:
+            resp = client.post(
+                f"{LICENSE_SERVER_URL}/api/check",
                 json={"key": key, "hwid": hwid},
             )
-            data = resp.json()
-            return {
-                "valid": data.get("valid", False),
-                "message": data.get("message", "验证失败"),
-                "hwid": hwid,
-                "expiry": data.get("expiry", ""),
-            }
+            return resp.json()
     except Exception as e:
-        logger.error(f"Remote license validation failed: {e}")
-        return {"valid": False, "message": f"网络验证失败: {e}"}
+        logger.error(f"Remote check failed: {e}")
+        return {"valid": False, "message": f"网络请求失败: {e}"}
 
+
+# ── Public API ────────────────────────────────────────────────────
 
 def activate_key(key: str, cfg) -> dict:
-    """Activate a license key and save to config.
-
-    For local mode: accepts any non-empty key and binds to HWID.
-    For remote mode: validates against server first.
-    """
+    """Activate a license key via the remote server."""
     hwid = get_hwid()
 
     if not key or len(key) < 4:
         return {"valid": False, "message": "卡密格式无效"}
 
-    # If remote server is configured, we'd need async validation
-    # For local mode, just bind the key
-    import re
-    match = re.match(r"^[A-Za-z]+-[A-Fa-f0-9]+-(\d+)D$", key)
-    if match:
-        days = int(match.group(1))
-        import time
-        expiry = str(time.time() + days * 86400)
-    else:
-        # Permanent key
-        expiry = str(time.time() + 365 * 10 * 86400)  # 10 years
+    result = _remote_activate(key, hwid)
+    if result.get("valid"):
+        expiry = result.get("expiry", "")
+        _save_license_cache(cfg, key, hwid, expiry)
 
-    cfg.set("license_key", key)
-    cfg.set("license_hwid", hwid)
-    cfg.set("license_expiry", expiry)
-    cfg.save()
-
-    return {"valid": True, "message": "激活成功", "hwid": hwid, "expiry": expiry}
+    return result
 
 
 def is_activated(cfg) -> bool:
-    """Check if the current machine has a valid license."""
-    key = cfg.get("license_key", "")
-    stored_hwid = cfg.get("license_hwid", "")
-    stored_expiry = cfg.get("license_expiry", "")
+    """Check if the current machine has a valid license.
 
-    if not key:
+    1. Verify local cache signature
+    2. Try remote heartbeat
+    3. Fall back to cache within grace period if offline
+    """
+    if not _verify_cache(cfg):
         return False
 
-    result = validate_license_local(key, stored_hwid, stored_expiry)
-    return result.get("valid", False)
+    key = cfg.get("license_key", "")
+    stored_hwid = cfg.get("license_hwid", "")
+    current_hwid = get_hwid()
+
+    if stored_hwid and stored_hwid != current_hwid:
+        return False
+
+    # Check local expiry first
+    stored_expiry = cfg.get("license_expiry", "")
+    if stored_expiry:
+        try:
+            if time.time() > float(stored_expiry):
+                return False
+        except ValueError:
+            pass
+
+    # Try remote heartbeat
+    result = _remote_check(key, current_hwid)
+    if result.get("valid"):
+        cfg.set("license_last_check", str(time.time()))
+        cfg.save()
+        return True
+
+    # Remote said invalid (not just network error)
+    msg = result.get("message", "")
+    if "网络请求失败" in msg or "timeout" in msg.lower():
+        # Network error — allow grace period
+        last_check = cfg.get("license_last_check", "")
+        if last_check:
+            try:
+                elapsed = time.time() - float(last_check)
+                if elapsed < OFFLINE_GRACE_SECONDS:
+                    logger.info(f"Offline grace: {int(elapsed)}s / {OFFLINE_GRACE_SECONDS}s")
+                    return True
+            except ValueError:
+                pass
+        return False
+
+    # Server explicitly rejected (expired / banned / wrong device)
+    return False
 
 
 def get_license_info(cfg) -> dict:
@@ -145,7 +177,7 @@ def get_license_info(cfg) -> dict:
             pass
 
     return {
-        "activated": is_activated(cfg),
+        "activated": _verify_cache(cfg),
         "key": key,
         "hwid": hwid,
         "expiry": expiry_str,

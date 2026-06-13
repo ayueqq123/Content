@@ -96,6 +96,8 @@ _DEFAULTS: dict = {
     "license_key": "",
     "license_hwid": "",
     "license_expiry": "",
+    "license_sig": "",
+    "license_last_check": "",
 }
 
 
