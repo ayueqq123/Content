@@ -1,6 +1,13 @@
 """Entry point for the Telegram Bot Desktop Application."""
 
+import os
 import sys
+
+# Ensure the project root is on sys.path (needed for embedded Python / .pth builds)
+_ROOT = os.path.dirname(os.path.abspath(__file__))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
 import asyncio
 import logging
 
