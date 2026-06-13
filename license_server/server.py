@@ -1,16 +1,23 @@
-"""FastAPI license verification server.
+"""FastAPI license verification server + admin Web UI.
 
 Usage:
     uvicorn license_server.server:app --host 0.0.0.0 --port 8900
 
 Environment variables:
-    LICENSE_ADMIN_KEY  — required admin API key (set before starting)
+    LICENSE_ADMIN_KEY       — admin API key for programmatic access (curl etc.)
+    LICENSE_ADMIN_PASSWORD  — admin panel login password (fallback)
+    DAOHAO_DB_PATH          — path to daohao's sqlite DB; if set, the admin panel
+                              login reuses daohao's `web_password` setting
 """
 
 import os
+import time
+import secrets
+import sqlite3
 import logging
 
-from fastapi import FastAPI, Request, HTTPException, Depends
+from fastapi import FastAPI, Request, HTTPException, Depends, status
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -22,19 +29,31 @@ from license_server.database import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-ADMIN_KEY = os.environ.get("LICENSE_ADMIN_KEY", "")
+_STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
-app = FastAPI(title="TG Bot License Server", version="1.0.0")
+ADMIN_KEY = os.environ.get("LICENSE_ADMIN_KEY", "")
+ADMIN_PASSWORD_ENV = os.environ.get("LICENSE_ADMIN_PASSWORD", "")
+DAOHAO_DB_PATH = os.environ.get("DAOHAO_DB_PATH", "")
+
+app = FastAPI(title="TG Bot License Server", version="1.1.0")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# Session + lockout stores (reused from daohao auth pattern)
+_active_sessions: set[str] = set()
+_failed_attempts: dict[str, dict] = {}
+
 
 # ── Pydantic models ──────────────────────────────────────────────
+
+class LoginRequest(BaseModel):
+    password: str
 
 class ActivateRequest(BaseModel):
     key: str
@@ -54,14 +73,45 @@ class KeyActionRequest(BaseModel):
     key: str
 
 
-# ── Admin key dependency ─────────────────────────────────────────
+# ── Auth helpers (reuse daohao login) ────────────────────────────
+
+def get_admin_password() -> str:
+    """Resolve the admin panel password.
+
+    Priority: daohao DB `web_password` → LICENSE_ADMIN_PASSWORD → LICENSE_ADMIN_KEY
+    """
+    if DAOHAO_DB_PATH and os.path.exists(DAOHAO_DB_PATH):
+        try:
+            conn = sqlite3.connect(DAOHAO_DB_PATH)
+            row = conn.execute(
+                "SELECT value FROM settings WHERE key = 'web_password'"
+            ).fetchone()
+            conn.close()
+            if row and row[0]:
+                return row[0]
+        except Exception as e:
+            logger.error(f"Failed to read daohao password: {e}")
+    if ADMIN_PASSWORD_ENV:
+        return ADMIN_PASSWORD_ENV
+    return ADMIN_KEY
+
 
 def verify_admin(request: Request):
-    token = request.headers.get("X-Admin-Key", "")
-    if not ADMIN_KEY:
-        raise HTTPException(500, "服务端未配置 LICENSE_ADMIN_KEY")
-    if token != ADMIN_KEY:
-        raise HTTPException(403, "管理密钥无效")
+    """Allow either a logged-in session token (Bearer) or the X-Admin-Key header."""
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header.split(" ", 1)[1]
+        if token in _active_sessions:
+            return True
+
+    key = request.headers.get("X-Admin-Key", "")
+    if ADMIN_KEY and key == ADMIN_KEY:
+        return True
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="未授权：请先登录或提供有效的管理密钥",
+    )
 
 
 # ── Startup ──────────────────────────────────────────────────────
@@ -69,9 +119,66 @@ def verify_admin(request: Request):
 @app.on_event("startup")
 def on_startup():
     init_db()
-    if not ADMIN_KEY:
-        logger.warning("LICENSE_ADMIN_KEY not set — admin endpoints will reject all requests")
+    if not get_admin_password():
+        logger.warning("No admin password/key configured — admin panel will reject all logins")
     logger.info("License server started")
+
+
+# ── Admin Web UI ─────────────────────────────────────────────────
+
+@app.get("/")
+async def admin_panel():
+    index = os.path.join(_STATIC_DIR, "index.html")
+    if os.path.exists(index):
+        return FileResponse(index)
+    raise HTTPException(404, "admin panel not found")
+
+
+@app.post("/api/auth/login")
+async def api_login(req: LoginRequest, request: Request):
+    ip = request.client.host if request.client else "unknown"
+    now = time.time()
+
+    if ip in _failed_attempts:
+        record = _failed_attempts[ip]
+        if record["lockout_until"] > now:
+            remaining = int(record["lockout_until"] - now)
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"密码错误次数过多，该 IP 已被临时锁定。请在 {remaining} 秒后再试。",
+            )
+
+    expected = get_admin_password()
+    if expected and secrets.compare_digest(req.password, expected):
+        _failed_attempts.pop(ip, None)
+        token = secrets.token_hex(32)
+        _active_sessions.add(token)
+        return {"success": True, "token": token}
+
+    if ip not in _failed_attempts:
+        _failed_attempts[ip] = {"count": 1, "lockout_until": 0}
+    else:
+        _failed_attempts[ip]["count"] += 1
+
+    if _failed_attempts[ip]["count"] >= 5:
+        _failed_attempts[ip]["lockout_until"] = now + 900
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="密码错误次数过多，该 IP 已被锁定 15 分钟。",
+        )
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail=f"密码错误。您还有 {5 - _failed_attempts[ip]['count']} 次尝试机会。",
+    )
+
+
+@app.post("/api/auth/logout")
+async def api_logout(request: Request):
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        _active_sessions.discard(auth_header.split(" ", 1)[1])
+    return {"success": True}
 
 
 # ── Public endpoints ─────────────────────────────────────────────
@@ -79,15 +186,13 @@ def on_startup():
 @app.post("/api/activate")
 async def api_activate(body: ActivateRequest, request: Request):
     ip = request.client.host if request.client else ""
-    result = activate_key(body.key, body.hwid, ip)
-    return result
+    return activate_key(body.key, body.hwid, ip)
 
 
 @app.post("/api/check")
 async def api_check(body: CheckRequest, request: Request):
     ip = request.client.host if request.client else ""
-    result = check_key(body.key, body.hwid, ip)
-    return result
+    return check_key(body.key, body.hwid, ip)
 
 
 @app.get("/api/ping")
