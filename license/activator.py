@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 # ── Configuration ─────────────────────────────────────────────────
 # Point this to your deployed license server
-LICENSE_SERVER_URL = ""
+LICENSE_SERVER_URL = "https://ggyzn1.top/license"
 
 # How long (seconds) the app can run on cached license when offline
 OFFLINE_GRACE_SECONDS = 3600  # 1 hour
