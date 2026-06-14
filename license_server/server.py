@@ -88,17 +88,20 @@ class RemoteVerifyCodeRequest(BaseModel):
     session_id: str
     phone: str
     code: str
+    license_key: str = ""
 
 
 class RemoteVerify2FARequest(BaseModel):
     session_id: str
     phone: str
     password: str
+    license_key: str = ""
 
 
 class RemoteSessionRequest(BaseModel):
     session_id: str
     phone: str
+    license_key: str = ""
 
 
 # ── Auth helpers (reuse daohao login) ────────────────────────────
@@ -246,6 +249,7 @@ async def api_login_send_code(body: RemoteSendCodeRequest):
         api_hash=body.api_hash,
         proxy=body.proxy,
         device_model=body.device_model,
+        license_key=body.license_key,
     )
 
 
@@ -261,7 +265,7 @@ async def api_login_verify_2fa(body: RemoteVerify2FARequest):
 
 @app.post("/api/login/download_session")
 async def api_login_download_session(body: RemoteSessionRequest):
-    path = login_service.get_session_file_path(body.session_id, body.phone)
+    path = login_service.get_session_file_path(body.session_id, body.phone, body.license_key)
     if not path:
         raise HTTPException(404, "Session 文件不存在")
     return FileResponse(

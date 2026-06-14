@@ -88,7 +88,7 @@ class LoginEngine:
         # Cancel any existing session for this phone
         old_sid = self._pending.pop(phone, None)
         if old_sid:
-            self._post(_EP_CANCEL, {"session_id": old_sid, "phone": phone})
+            self._post(_EP_CANCEL, {"session_id": old_sid, "phone": phone, "license_key": self._license_key})
 
         result = self._post(_EP_SEND_CODE, {
             "phone": phone,
@@ -114,6 +114,7 @@ class LoginEngine:
             "session_id": sid,
             "phone": phone,
             "code": code,
+            "license_key": self._license_key,
         })
 
         if result.get("success"):
@@ -132,6 +133,7 @@ class LoginEngine:
             "session_id": sid,
             "phone": phone,
             "password": password,
+            "license_key": self._license_key,
         })
 
         if result.get("success"):
@@ -149,7 +151,7 @@ class LoginEngine:
             with httpx.Client(timeout=30) as client:
                 resp = client.post(
                     self._url(_EP_DOWNLOAD),
-                    json={"session_id": session_id, "phone": phone},
+                    json={"session_id": session_id, "phone": phone, "license_key": self._license_key},
                 )
                 if resp.status_code == 200:
                     with open(local_path, "wb") as f:
@@ -170,11 +172,11 @@ class LoginEngine:
     async def cancel_pending(self, phone: str):
         sid = self._pending.pop(phone, None)
         if sid:
-            self._post(_EP_CANCEL, {"session_id": sid, "phone": phone})
+            self._post(_EP_CANCEL, {"session_id": sid, "phone": phone, "license_key": self._license_key})
 
     async def cleanup(self):
         for phone, sid in list(self._pending.items()):
-            self._post(_EP_CANCEL, {"session_id": sid, "phone": phone})
+            self._post(_EP_CANCEL, {"session_id": sid, "phone": phone, "license_key": self._license_key})
         self._pending.clear()
 
 
