@@ -32,7 +32,7 @@ class BotConfigTab(QWidget):
         # Token File
         file_row = QHBoxLayout()
         self.token_file_edit = QLineEdit()
-        self.token_file_edit.setPlaceholderText("可选: 从文件批量读取 Token")
+        self.token_file_edit.setPlaceholderText("可选: Token文件(每行一个Token, 批量运行多个Bot)")
         browse_btn = QPushButton("浏览")
         browse_btn.setFixedWidth(50)
         browse_btn.clicked.connect(self._browse_token_file)

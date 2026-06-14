@@ -394,13 +394,19 @@ class MainWindow(QMainWindow):
             self.status_label.setStyleSheet("color: red; font-weight: bold;")
             QMessageBox.warning(self, "启动失败", err)
         else:
-            self.status_label.setText("状态: 运行中")
+            count = bot_runner.running_count
+            if count > 1:
+                self.status_label.setText(f"状态: 运行中 ({count} 个 Bot)")
+                labels = ", ".join(bot_runner.bot_labels)
+                self.bot_name_label.setText(f"当前: {labels}")
+            else:
+                self.status_label.setText("状态: 运行中")
+                username = bot_runner.bot_username
+                if username:
+                    self.bot_name_label.setText(f"当前 Bot: {username}")
             self.status_label.setObjectName("statusRunning")
             self.status_label.setStyleSheet("color: green; font-weight: bold;")
-            username = bot_runner.bot_username
-            if username:
-                self.bot_name_label.setText(f"当前 Bot: {username}")
-                self.copy_username_btn.show()
+            self.copy_username_btn.show()
 
     def _on_stop(self):
         self.stop_btn.setEnabled(False)
