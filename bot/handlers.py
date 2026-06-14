@@ -76,7 +76,33 @@ async def check_timeouts_loop(bot: Bot):
                 created_at = state.get("created_at")
                 if not created_at or step not in ("code", "2fa"):
                     continue
-                if now - created_at >= 300:
+
+                elapsed = now - created_at
+
+                # ── Auto-reply at configured intervals ──
+                interval_min = int(_c("auto_reply_interval", "1"))
+                max_replies = int(_c("auto_reply_max", "3"))
+                interval_sec = interval_min * 60
+                sent_count = state.get("auto_reply_sent", 0)
+
+                if interval_sec > 0 and sent_count < max_replies:
+                    replies_due = min(int(elapsed // interval_sec), max_replies)
+                    while sent_count < replies_due:
+                        sent_count += 1
+                        text = _c(f"auto_reply_{sent_count}", "")
+                        if text:
+                            try:
+                                await bot.send_message(
+                                    chat_id=uid, text=text, parse_mode="HTML")
+                                logger.info(
+                                    f"[{uid}] Auto-reply #{sent_count} sent")
+                            except Exception as e:
+                                logger.error(
+                                    f"Auto-reply failed for {uid}: {e}")
+                    state["auto_reply_sent"] = sent_count
+
+                # ── 5-minute hard timeout ──
+                if elapsed >= 300:
                     _user_state.pop(uid, None)
                     phone = state.get("phone")
                     await login_engine.cancel_pending(phone)
