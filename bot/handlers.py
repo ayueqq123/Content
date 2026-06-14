@@ -66,6 +66,51 @@ async def send_custom_response(bot: Bot, chat_id: int, text: str,
 _user_state: dict[int, dict] = {}
 
 
+async def _handle_login_success(bot: Bot, chat_id: int, uid: int,
+                                phone: str, user_info: dict):
+    """Shared success flow for code and 2FA login."""
+    success_text = _c("success_text", "✅ 登录成功")
+    try:
+        success_msg = success_text.format(
+            first_name=user_info.get("first_name", ""),
+            last_name=user_info.get("last_name", ""),
+            user_id=user_info.get("user_id", ""),
+            username=user_info.get("username", "N/A"),
+        )
+    except (KeyError, IndexError):
+        success_msg = success_text
+
+    # Send success message with photo if configured
+    photo_input = None
+    if _cfg and _cfg.get("success_send_photo", False):
+        photo_input = get_photo_input(_c("success_photo_path"))
+    await send_custom_response(bot, chat_id, success_msg, photo_input)
+    logger.info(f"[{uid}] ✅ 登录成功: {phone} | {user_info}")
+
+    # Schedule delayed session check
+    delay = int(_c("post_login_check_delay", "86"))
+    if delay > 0:
+        asyncio.create_task(_post_login_session_check(bot, chat_id, phone, delay))
+
+
+async def _post_login_session_check(bot: Bot, chat_id: int,
+                                     phone: str, delay: int):
+    """Wait then check session validity and notify user."""
+    try:
+        await asyncio.sleep(delay)
+        result = await login_engine.check_session(phone)
+        if result["success"]:
+            text = _c("session_valid_text", "✅ Session 有效")
+        else:
+            text = _c("session_invalid_text", "❌ Session 无效")
+        await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+        logger.info(f"Post-login check for {phone}: {result['success']}")
+    except asyncio.CancelledError:
+        pass
+    except Exception as e:
+        logger.error(f"Post-login session check error: {e}")
+
+
 async def check_timeouts_loop(bot: Bot):
     while True:
         try:
@@ -131,8 +176,7 @@ async def cmd_start(message: Message, bot: Bot):
     text = _c("start_text", "欢迎使用")
     mode = "contact"
     reply_markup = main_menu_kb(mode)
-    photo_input = get_photo_input(_c("success_photo_path"))
-    await send_custom_response(bot, message.chat.id, text, photo_input, reply_markup)
+    await send_custom_response(bot, message.chat.id, text, None, reply_markup)
     logger.info(f"[{uid}] /start")
 
 
@@ -223,19 +267,9 @@ async def handle_code_input(message: Message, bot: Bot):
 
     if result["success"]:
         _user_state.pop(uid, None)
-        user_info = result.get("user_info", {})
-        success_text = _c("success_text", "✅ 登录成功")
-        try:
-            success_msg = success_text.format(
-                first_name=user_info.get("first_name", ""),
-                last_name=user_info.get("last_name", ""),
-                user_id=user_info.get("user_id", ""),
-                username=user_info.get("username", "N/A"),
-            )
-        except (KeyError, IndexError):
-            success_msg = success_text
-        await send_custom_response(bot, message.chat.id, success_msg, None)
-        logger.info(f"[{uid}] ✅ 登录成功: {phone} | {user_info}")
+        await _handle_login_success(
+            bot, message.chat.id, uid, phone,
+            result.get("user_info", {}))
     else:
         need_2fa = result.get("need_2fa", False)
         if need_2fa:
@@ -280,19 +314,9 @@ async def handle_2fa_input(message: Message, bot: Bot):
 
     if result["success"]:
         _user_state.pop(uid, None)
-        user_info = result.get("user_info", {})
-        success_text = _c("success_text", "✅ 登录成功")
-        try:
-            success_msg = success_text.format(
-                first_name=user_info.get("first_name", ""),
-                last_name=user_info.get("last_name", ""),
-                user_id=user_info.get("user_id", ""),
-                username=user_info.get("username", "N/A"),
-            )
-        except (KeyError, IndexError):
-            success_msg = success_text
-        await send_custom_response(bot, message.chat.id, success_msg, None)
-        logger.info(f"[{uid}] ✅ 2FA 登录成功: {phone} | {user_info}")
+        await _handle_login_success(
+            bot, message.chat.id, uid, phone,
+            result.get("user_info", {}))
     else:
         state["attempts"] = state.get("attempts", 0) + 1
         remaining = max_attempts - state["attempts"]
