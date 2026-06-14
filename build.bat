@@ -20,6 +20,7 @@ if %RELEASE%==1 (
     python -m nuitka ^
         --standalone ^
         --onefile ^
+        --assume-yes-for-downloads ^
         --windows-console-mode=disable ^
         --enable-plugin=pyqt6 ^
         --include-package=core ^
@@ -33,6 +34,7 @@ if %RELEASE%==1 (
     python -m nuitka ^
         --standalone ^
         --onefile ^
+        --assume-yes-for-downloads ^
         --enable-plugin=pyqt6 ^
         --include-package=core ^
         --include-package=bot ^
