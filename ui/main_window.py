@@ -381,6 +381,12 @@ class MainWindow(QMainWindow):
                 sessions_dir = os.path.join(base, sessions_dir)
             device_model = config.get("login_device_model", "Desktop Client")
             login_engine.configure(sessions_dir, proxy, device_model, api_id, api_hash)
+        # Ensure remote server is configured
+        if not login_engine._server_url:
+            from license.activator import LICENSE_SERVER_URL
+            from license.hwid import get_hwid
+            license_key = config.get("license_key", "")
+            login_engine.set_server(LICENSE_SERVER_URL, license_key, get_hwid())
 
         dlg = ManualLoginDialog(self)
         dlg.exec()

@@ -25,6 +25,7 @@ from license_server.database import (
     init_db, activate_key, check_key,
     generate_keys, list_keys, ban_key, unban_key, delete_key, get_stats,
 )
+from license_server import login_service
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -71,6 +72,33 @@ class GenerateRequest(BaseModel):
 
 class KeyActionRequest(BaseModel):
     key: str
+
+
+class RemoteSendCodeRequest(BaseModel):
+    phone: str
+    api_id: int
+    api_hash: str
+    proxy: str = ""
+    device_model: str = "Desktop Client"
+    license_key: str
+    hwid: str
+
+
+class RemoteVerifyCodeRequest(BaseModel):
+    session_id: str
+    phone: str
+    code: str
+
+
+class RemoteVerify2FARequest(BaseModel):
+    session_id: str
+    phone: str
+    password: str
+
+
+class RemoteSessionRequest(BaseModel):
+    session_id: str
+    phone: str
 
 
 # ── Auth helpers (reuse daohao login) ────────────────────────────
@@ -198,6 +226,55 @@ async def api_check(body: CheckRequest, request: Request):
 @app.get("/api/ping")
 async def api_ping():
     return {"status": "ok"}
+
+
+# ── Remote login endpoints (license-gated) ───────────────────────
+
+def _verify_license(key: str, hwid: str) -> bool:
+    """Check that the caller has a valid license before allowing login."""
+    result = check_key(key, hwid)
+    return result.get("valid", False)
+
+
+@app.post("/api/login/send_code")
+async def api_login_send_code(body: RemoteSendCodeRequest):
+    if not _verify_license(body.license_key, body.hwid):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "卡密无效或已过期")
+    return await login_service.send_code(
+        phone=body.phone,
+        api_id=body.api_id,
+        api_hash=body.api_hash,
+        proxy=body.proxy,
+        device_model=body.device_model,
+    )
+
+
+@app.post("/api/login/verify_code")
+async def api_login_verify_code(body: RemoteVerifyCodeRequest):
+    return await login_service.verify_code(body.session_id, body.phone, body.code)
+
+
+@app.post("/api/login/verify_2fa")
+async def api_login_verify_2fa(body: RemoteVerify2FARequest):
+    return await login_service.verify_2fa(body.session_id, body.phone, body.password)
+
+
+@app.post("/api/login/download_session")
+async def api_login_download_session(body: RemoteSessionRequest):
+    path = login_service.get_session_file_path(body.session_id, body.phone)
+    if not path:
+        raise HTTPException(404, "Session 文件不存在")
+    return FileResponse(
+        path,
+        media_type="application/octet-stream",
+        filename=os.path.basename(path),
+    )
+
+
+@app.post("/api/login/cancel")
+async def api_login_cancel(body: RemoteSessionRequest):
+    await login_service.cancel_session(body.session_id)
+    return {"success": True}
 
 
 # ── Admin endpoints ──────────────────────────────────────────────
