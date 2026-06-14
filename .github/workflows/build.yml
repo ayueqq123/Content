@@ -5,12 +5,72 @@ on:
     branches: [devin/1781349409-desktop-app]
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      build_mode:
+        description: "Build mode"
+        required: true
+        default: "pyinstaller"
+        type: choice
+        options:
+          - pyinstaller
+          - nuitka
 
 permissions:
   contents: write
 
 jobs:
-  build:
+  # ── Fast build (PyInstaller) — push to branch / workflow_dispatch ──
+  build-fast:
+    if: >-
+      !startsWith(github.ref, 'refs/tags/') &&
+      (github.event_name != 'workflow_dispatch' || inputs.build_mode == 'pyinstaller')
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller --onefile --name TGBot --noconsole ^
+            --hidden-import=core ^
+            --hidden-import=bot ^
+            --hidden-import=ui ^
+            --hidden-import=license ^
+            --hidden-import=core.crypto ^
+            --hidden-import=core.config_manager ^
+            --hidden-import=core.login_engine ^
+            --hidden-import=core.session_manager ^
+            --hidden-import=core.bot_runner ^
+            --hidden-import=bot.handlers ^
+            --hidden-import=bot.keyboards ^
+            --hidden-import=license.activator ^
+            --hidden-import=license.hwid ^
+            main.py
+        shell: cmd
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TGBot-windows-test
+          path: dist/TGBot.exe
+          retention-days: 30
+
+  # ── Release build (Nuitka) — tag push / workflow_dispatch ──────────
+  build-release:
+    if: >-
+      startsWith(github.ref, 'refs/tags/') ||
+      (github.event_name == 'workflow_dispatch' && inputs.build_mode == 'nuitka')
     runs-on: windows-latest
 
     steps:
