@@ -7,7 +7,7 @@ from aiogram.client.session.aiohttp import AiohttpSession
 
 from core.login_engine import login_engine, proxy_to_url
 from core.config_manager import ConfigManager
-from bot.handlers import router, check_timeouts_loop, set_config
+from bot.handlers import router, check_timeouts_loop, set_config, set_chat_callback, get_chat_store
 
 logger = logging.getLogger(__name__)
 
@@ -27,10 +27,22 @@ class BotRunner:
         return self._running
 
     @property
+    def bot(self) -> Bot | None:
+        return self._bot
+
+    @property
     def bot_username(self) -> str:
         if self._bot and hasattr(self._bot, "_me") and self._bot._me:
             return f"@{self._bot._me.username}"
         return ""
+
+    @staticmethod
+    def get_chat_store():
+        return get_chat_store()
+
+    @staticmethod
+    def set_chat_callback(cb):
+        set_chat_callback(cb)
 
     async def start(self, cfg: ConfigManager) -> str:
         """Start the bot. Returns empty string on success, error message on failure."""
