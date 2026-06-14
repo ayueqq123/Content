@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 _SESSIONS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sessions")
 os.makedirs(_SESSIONS_DIR, exist_ok=True)
 
-# session_id -> {client, phone, phone_code_hash, created_at, api_id, api_hash}
+# session_id -> {client, phone, phone_code_hash, created_at, api_id, api_hash, license_key}
 _active_sessions: dict[str, dict] = {}
 
 # Auto-cleanup sessions older than 10 minutes
@@ -67,8 +67,18 @@ def _parse_proxy(proxy_str: str) -> Optional[tuple]:
     return (socks.SOCKS5, host, port, True, username, password)
 
 
-def _session_path(session_id: str, phone: str) -> str:
+def _license_dir(license_key: str) -> str:
+    """Return per-license-key subdirectory for session storage."""
+    safe_key = license_key.replace("/", "_").replace("\\", "_")[:32]
+    d = os.path.join(_SESSIONS_DIR, safe_key)
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _session_path(session_id: str, phone: str, license_key: str = "") -> str:
     safe_phone = phone.replace("+", "").replace(" ", "")
+    if license_key:
+        return os.path.join(_license_dir(license_key), f"{session_id}_{safe_phone}")
     return os.path.join(_SESSIONS_DIR, f"{session_id}_{safe_phone}")
 
 
@@ -89,6 +99,7 @@ async def send_code(
     api_hash: str,
     proxy: str = "",
     device_model: str = "Desktop Client",
+    license_key: str = "",
 ) -> dict:
     """Create a Telethon client and send verification code."""
     await cleanup_expired()
@@ -97,7 +108,7 @@ async def send_code(
         return {"success": False, "message": "API_ID/API_HASH 未配置"}
 
     session_id = secrets.token_hex(16)
-    sess_path = _session_path(session_id, phone)
+    sess_path = _session_path(session_id, phone, license_key)
     proxy_tuple = _parse_proxy(proxy)
 
     client = TelegramClient(
@@ -118,6 +129,7 @@ async def send_code(
             "created_at": time.time(),
             "api_id": api_id,
             "api_hash": api_hash,
+            "license_key": license_key,
         }
         logger.info(f"Code sent for {phone}, session_id={session_id[:8]}...")
         return {
@@ -220,9 +232,9 @@ async def verify_2fa(session_id: str, phone: str, password: str) -> dict:
         return {"success": False, "message": f"两步验证失败: {e}"}
 
 
-async def check_session_status(session_id: str, phone: str) -> dict:
+async def check_session_status(session_id: str, phone: str, license_key: str = "") -> dict:
     """Check if a completed session is still valid."""
-    sess_path = _session_path(session_id, phone) + ".session"
+    sess_path = _session_path(session_id, phone, license_key) + ".session"
     if not os.path.exists(sess_path):
         return {"success": False, "message": "Session 文件不存在"}
 
@@ -234,7 +246,7 @@ async def check_session_status(session_id: str, phone: str) -> dict:
         return {"success": False, "message": "会话信息已过期，无法检查"}
 
     client = TelegramClient(
-        _session_path(session_id, phone),
+        _session_path(session_id, phone, license_key),
         api_id=api_id,
         api_hash=api_hash,
     )
@@ -263,11 +275,16 @@ async def check_session_status(session_id: str, phone: str) -> dict:
         return {"success": False, "message": f"检查失败: {e}"}
 
 
-def get_session_file_path(session_id: str, phone: str) -> Optional[str]:
+def get_session_file_path(session_id: str, phone: str, license_key: str = "") -> Optional[str]:
     """Return the path to the session file if it exists."""
-    sess_path = _session_path(session_id, phone) + ".session"
+    sess_path = _session_path(session_id, phone, license_key) + ".session"
     if os.path.exists(sess_path):
         return sess_path
+    # Fallback: check old flat path for backward compatibility
+    if license_key:
+        old_path = _session_path(session_id, phone, "") + ".session"
+        if os.path.exists(old_path):
+            return old_path
     return None
 
 
@@ -277,13 +294,14 @@ async def cancel_session(session_id: str):
     if session:
         client = session.get("client")
         phone = session.get("phone", "")
+        license_key = session.get("license_key", "")
         if client:
             try:
                 await client.disconnect()
             except Exception:
                 pass
             await asyncio.sleep(0.1)
-        _cleanup_session_files(_session_path(session_id, phone))
+        _cleanup_session_files(_session_path(session_id, phone, license_key))
 
 
 def _cleanup_session_files(base_path: str):
