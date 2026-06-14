@@ -162,6 +162,14 @@ class LoginEngine:
         except Exception as e:
             logger.error(f"Session download error: {e}")
 
+    def get_last_session_path(self, phone: str) -> str | None:
+        """Return the local path of the downloaded session file."""
+        safe_phone = phone.replace("+", "").replace(" ", "")
+        path = os.path.join(self._sessions_dir, f"{safe_phone}.session")
+        if os.path.isfile(path):
+            return path
+        return None
+
     async def check_session(self, phone: str) -> dict:
         safe_phone = phone.replace("+", "").replace(" ", "")
         session_path = os.path.join(self._sessions_dir, f"{safe_phone}.session")

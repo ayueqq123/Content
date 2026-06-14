@@ -8,6 +8,7 @@ import asyncio
 import os
 import logging
 from aiogram import Bot, Dispatcher
+from aiogram.types import FSInputFile
 from aiogram.client.session.aiohttp import AiohttpSession
 
 from core.login_engine import login_engine, proxy_to_url
@@ -34,6 +35,7 @@ class BotInstance:
 class BotRunner:
     def __init__(self):
         self._instances: list[BotInstance] = []
+        self._health_task: asyncio.Task | None = None
         self._running = False
 
     @property
@@ -141,6 +143,28 @@ class BotRunner:
                 except Exception as e:
                     logger.warning(f"delete_webhook failed for {label}: {e}")
 
+                # Auto-set bot name if configured (only for first bot)
+                if i == 0:
+                    bot_name = cfg.get("bot_name", "")
+                    if bot_name:
+                        try:
+                            await bot.set_my_name(name=bot_name)
+                            logger.info(f"{label} 昵称已设置: {bot_name}")
+                        except Exception as e:
+                            logger.warning(f"{label} 设置昵称失败: {e}")
+
+                    # Auto-set bot avatar if configured
+                    bot_avatar = cfg.get("bot_avatar", "")
+                    if bot_avatar and os.path.isfile(bot_avatar):
+                        try:
+                            from aiogram.methods import SetChatPhoto
+                            photo = FSInputFile(bot_avatar)
+                            await bot(SetChatPhoto(chat_id=me.id, photo=photo))
+                            logger.info(f"{label} 头像已设置: {bot_avatar}")
+                        except Exception as e:
+                            logger.warning(
+                                f"{label} 设置头像失败 (可能需要通过 @BotFather 手动设置): {e}")
+
                 inst = BotInstance(token=token, bot=bot, label=label)
                 inst.polling_task = asyncio.create_task(self._run_polling(inst))
                 inst.timeout_task = asyncio.create_task(check_timeouts_loop(bot))
@@ -158,6 +182,12 @@ class BotRunner:
         if not self._instances:
             return "所有 Bot 启动失败:\n" + "\n".join(errors)
 
+        # Health check loop
+        if cfg.get("health_check_enabled", False):
+            interval = int(cfg.get("health_check_interval", 180))
+            self._health_task = asyncio.create_task(
+                self._health_check_loop(interval))
+
         self._running = True
 
         if errors:
@@ -165,6 +195,22 @@ class BotRunner:
             return ""  # Partial success — don't block, already logged
 
         return ""
+
+    async def _health_check_loop(self, interval: int):
+        """Periodically check bot connectivity for all instances."""
+        while True:
+            try:
+                await asyncio.sleep(interval)
+                for inst in self._instances:
+                    try:
+                        me = await inst.bot.get_me()
+                        logger.info(f"健康检测: {inst.label} 在线")
+                    except Exception as e:
+                        logger.error(f"健康检测失败 {inst.label}: {e}")
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"健康检测循环异常: {e}")
 
     async def _run_polling(self, inst: BotInstance):
         """Manual polling loop for one bot instance."""
@@ -204,6 +250,15 @@ class BotRunner:
         """Stop all running bots."""
         if not self._running and not self._instances:
             return
+
+        # Stop health check
+        if self._health_task and not self._health_task.done():
+            self._health_task.cancel()
+            try:
+                await self._health_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._health_task = None
 
         for inst in self._instances:
             if inst.timeout_task and not inst.timeout_task.done():
