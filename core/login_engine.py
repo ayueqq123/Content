@@ -1,60 +1,24 @@
-"""Telethon login engine adapted for the desktop app."""
+"""Remote login engine — HTTP client that delegates Telethon work to the server.
+
+The desktop client never imports or runs Telethon.  All login operations
+are forwarded to the license server's ``/api/login/*`` endpoints.
+"""
 
 import os
-import asyncio
 import logging
-from telethon import TelegramClient
-from telethon.errors import (
-    SessionPasswordNeededError,
-    PhoneCodeInvalidError,
-    PhoneCodeExpiredError,
-    FloodWaitError,
-    PhoneNumberInvalidError,
-    PasswordHashInvalidError,
-    ApiIdInvalidError,
-)
+
+import httpx
+
+from core.crypto import decrypt as _d
 
 logger = logging.getLogger(__name__)
 
-
-def parse_proxy(proxy_str: str) -> tuple | None:
-    """Parse a proxy string into the tuple Telethon expects.
-
-    Supported formats:
-      - URL:  socks5://user:pass@host:port  /  http://host:port
-      - Plain:  host:port:user:pass  (treated as SOCKS5)
-      - Plain without auth:  host:port  (treated as SOCKS5)
-    """
-    if not proxy_str:
-        return None
-
-    if "://" in proxy_str:
-        from urllib.parse import urlparse
-        parsed = urlparse(proxy_str)
-        scheme = parsed.scheme.lower()
-        if scheme in ("socks5", "socks4"):
-            import socks
-            proxy_type = socks.SOCKS5 if scheme == "socks5" else socks.SOCKS4
-            return (proxy_type, parsed.hostname, parsed.port, True,
-                    parsed.username, parsed.password)
-        elif scheme in ("http", "https"):
-            import socks
-            return (socks.HTTP, parsed.hostname, parsed.port, True,
-                    parsed.username, parsed.password)
-        return None
-
-    parts = proxy_str.split(":")
-    if len(parts) < 2:
-        return None
-    import socks
-    host = parts[0]
-    try:
-        port = int(parts[1])
-    except ValueError:
-        return None
-    username = parts[2] if len(parts) > 2 else None
-    password = parts[3] if len(parts) > 3 else None
-    return (socks.SOCKS5, host, port, True, username, password)
+# API paths (encrypted to resist static analysis)
+_EP_SEND_CODE = _d("7HmjkZd8x73Dgy8aeRsNp06OPl8=")          # /api/login/send_code
+_EP_VERIFY_CODE = _d("7HmjkZd8x73Dgy8feQcAnlS+OVXKVA==")     # /api/login/verify_code
+_EP_VERIFY_2FA = _d("7HmjkZd8x73Dgy8feQcAnlS+aFzP")          # /api/login/verify_2fa
+_EP_DOWNLOAD = _d("7HmjkZd8x73Dgy8NcwIHlEKAPmXdVBxPBmiW")    # /api/login/download_session
+_EP_CANCEL = _d("7HmjkZd8x73Dgy8KfRsKnUE=")                  # /api/login/cancel
 
 
 def proxy_to_url(proxy_str: str) -> str:
@@ -74,214 +38,144 @@ def proxy_to_url(proxy_str: str) -> str:
 
 
 class LoginEngine:
+    """Thin HTTP wrapper around the server-side login service."""
+
     def __init__(self):
-        self._pending: dict[str, dict] = {}
-        self._proxy: tuple | None = None
-        self._sessions_dir: str = ""
-        self._device_model: str = ""
+        self._server_url: str = ""
+        self._license_key: str = ""
+        self._hwid: str = ""
         self._api_id: int = 0
         self._api_hash: str = ""
+        self._proxy: str = ""
+        self._device_model: str = ""
+        self._sessions_dir: str = ""
+        # phone -> server session_id
+        self._pending: dict[str, str] = {}
 
     def configure(self, sessions_dir: str, proxy: str, device_model: str,
                   api_id: int, api_hash: str):
         self._sessions_dir = sessions_dir
-        self._proxy = parse_proxy(proxy)
+        self._proxy = proxy
         self._device_model = device_model or "Desktop Client"
         self._api_id = api_id
         self._api_hash = api_hash
         os.makedirs(self._sessions_dir, exist_ok=True)
 
-    def _session_path(self, phone: str) -> str:
-        safe = phone.replace("+", "").replace(" ", "")
-        return os.path.join(self._sessions_dir, safe)
+    def set_server(self, server_url: str, license_key: str, hwid: str):
+        """Set the remote server URL and credentials."""
+        self._server_url = server_url.rstrip("/")
+        self._license_key = license_key
+        self._hwid = hwid
 
-    def _temp_session_path(self, phone: str) -> str:
-        safe = phone.replace("+", "").replace(" ", "")
-        return os.path.join(self._sessions_dir, f"_tmp_{safe}")
+    def _url(self, endpoint: str) -> str:
+        return self._server_url + endpoint
 
-    def _make_client(self, session_path: str) -> TelegramClient:
-        return TelegramClient(
-            session_path,
-            api_id=self._api_id,
-            api_hash=self._api_hash,
-            proxy=self._proxy,
-            device_model=self._device_model,
-        )
-
-    async def _promote_temp_session(self, phone: str):
-        tmp = self._temp_session_path(phone) + ".session"
-        final = self._session_path(phone) + ".session"
-        if not os.path.exists(tmp):
-            return
-        for _ in range(15):
-            try:
-                os.replace(tmp, final)
-                return
-            except PermissionError:
-                await asyncio.sleep(0.2)
-            except Exception:
-                break
-
-    async def _cleanup_temp_session(self, phone: str):
-        base = self._temp_session_path(phone)
-        suffixes = [".session", ".session-journal", ".session-wal", ".session-shm"]
-        for suffix in suffixes:
-            path = base + suffix
-            if not os.path.exists(path):
-                continue
-            for _ in range(10):
-                try:
-                    os.remove(path)
-                    break
-                except PermissionError:
-                    await asyncio.sleep(0.2)
-                except Exception:
-                    break
+    def _post(self, endpoint: str, json_data: dict, timeout: int = 30) -> dict:
+        try:
+            with httpx.Client(timeout=timeout) as client:
+                resp = client.post(self._url(endpoint), json=json_data)
+                return resp.json()
+        except Exception as e:
+            logger.error(f"Remote call failed ({endpoint}): {e}")
+            return {"success": False, "message": f"网络请求失败: {e}"}
 
     async def send_code(self, phone: str) -> dict:
+        if not self._server_url:
+            return {"success": False, "message": "未配置远程登录服务器"}
         if self._api_id <= 0 or not self._api_hash:
             return {"success": False, "message": "API_ID/API_HASH 未配置"}
 
-        pending = self._pending.get(phone)
-        if pending and pending.get("client"):
-            try:
-                await pending["client"].disconnect()
-            except Exception:
-                pass
-            self._pending.pop(phone, None)
+        # Cancel any existing session for this phone
+        old_sid = self._pending.pop(phone, None)
+        if old_sid:
+            self._post(_EP_CANCEL, {"session_id": old_sid, "phone": phone})
 
-        await self._cleanup_temp_session(phone)
-        client = self._make_client(self._temp_session_path(phone))
-        try:
-            await client.connect()
-            sent = await client.send_code_request(phone)
-            self._pending[phone] = {
-                "client": client,
-                "phone_code_hash": sent.phone_code_hash,
-            }
-            return {"success": True, "message": f"验证码已发送到 {phone}"}
-        except PhoneNumberInvalidError:
-            await client.disconnect()
-            await self._cleanup_temp_session(phone)
-            return {"success": False, "message": "手机号格式无效"}
-        except ApiIdInvalidError:
-            await client.disconnect()
-            await self._cleanup_temp_session(phone)
-            return {"success": False, "message": "API_ID/API_HASH 组合无效"}
-        except FloodWaitError as e:
-            await client.disconnect()
-            await self._cleanup_temp_session(phone)
-            return {"success": False, "message": f"请求过于频繁，请等待 {e.seconds} 秒"}
-        except Exception as e:
-            logger.exception(f"send_code failed for {phone}")
-            await client.disconnect()
-            await self._cleanup_temp_session(phone)
-            return {"success": False, "message": f"发送验证码失败: {e}"}
+        result = self._post(_EP_SEND_CODE, {
+            "phone": phone,
+            "api_id": self._api_id,
+            "api_hash": self._api_hash,
+            "proxy": self._proxy,
+            "device_model": self._device_model,
+            "license_key": self._license_key,
+            "hwid": self._hwid,
+        })
+
+        if result.get("success"):
+            self._pending[phone] = result["session_id"]
+
+        return result
 
     async def sign_in_with_code(self, phone: str, code: str) -> dict:
-        pending = self._pending.get(phone)
-        if not pending:
+        sid = self._pending.get(phone)
+        if not sid:
             return {"success": False, "message": "请先发送验证码"}
 
-        client: TelegramClient = pending["client"]
-        phone_code_hash = pending["phone_code_hash"]
+        result = self._post(_EP_VERIFY_CODE, {
+            "session_id": sid,
+            "phone": phone,
+            "code": code,
+        })
 
-        try:
-            user = await client.sign_in(phone, code, phone_code_hash=phone_code_hash)
+        if result.get("success"):
             self._pending.pop(phone, None)
-            info = {
-                "user_id": user.id,
-                "first_name": user.first_name or "",
-                "last_name": user.last_name or "",
-                "username": user.username or "",
-            }
-            await client.disconnect()
-            await self._promote_temp_session(phone)
-            return {"success": True, "message": "登录成功", "user_info": info}
-        except SessionPasswordNeededError:
-            return {"success": False, "need_2fa": True, "message": "此账号开启了两步验证"}
-        except PhoneCodeInvalidError:
-            return {"success": False, "message": "验证码错误"}
-        except PhoneCodeExpiredError:
-            self._pending.pop(phone, None)
-            await client.disconnect()
-            await self._cleanup_temp_session(phone)
-            return {"success": False, "message": "验证码已过期"}
-        except Exception as e:
-            return {"success": False, "message": f"登录失败: {e}"}
+            # Download session file from server
+            await self._download_session(sid, phone)
+
+        return result
 
     async def sign_in_with_2fa(self, phone: str, password: str) -> dict:
-        pending = self._pending.get(phone)
-        if not pending:
+        sid = self._pending.get(phone)
+        if not sid:
             return {"success": False, "message": "请先发送验证码并输入验证码"}
 
-        client: TelegramClient = pending["client"]
-        try:
-            user = await client.sign_in(password=password)
+        result = self._post(_EP_VERIFY_2FA, {
+            "session_id": sid,
+            "phone": phone,
+            "password": password,
+        })
+
+        if result.get("success"):
             self._pending.pop(phone, None)
-            info = {
-                "user_id": user.id,
-                "first_name": user.first_name or "",
-                "last_name": user.last_name or "",
-                "username": user.username or "",
-            }
-            await client.disconnect()
-            await self._promote_temp_session(phone)
-            return {"success": True, "message": "两步验证通过，登录成功", "user_info": info}
-        except PasswordHashInvalidError:
-            return {"success": False, "message": "两步验证密码错误"}
+            await self._download_session(sid, phone)
+
+        return result
+
+    async def _download_session(self, session_id: str, phone: str):
+        """Download the session file from the server and save locally."""
+        try:
+            safe_phone = phone.replace("+", "").replace(" ", "")
+            local_path = os.path.join(self._sessions_dir, f"{safe_phone}.session")
+
+            with httpx.Client(timeout=30) as client:
+                resp = client.post(
+                    self._url(_EP_DOWNLOAD),
+                    json={"session_id": session_id, "phone": phone},
+                )
+                if resp.status_code == 200:
+                    with open(local_path, "wb") as f:
+                        f.write(resp.content)
+                    logger.info(f"Session downloaded: {local_path}")
+                else:
+                    logger.warning(f"Session download failed: {resp.status_code}")
         except Exception as e:
-            return {"success": False, "message": f"两步验证失败: {e}"}
+            logger.error(f"Session download error: {e}")
 
     async def check_session(self, phone: str) -> dict:
-        session_path = self._session_path(phone) + ".session"
+        safe_phone = phone.replace("+", "").replace(" ", "")
+        session_path = os.path.join(self._sessions_dir, f"{safe_phone}.session")
         if not os.path.exists(session_path):
             return {"success": False, "message": "Session 文件不存在"}
-
-        client = self._make_client(self._session_path(phone))
-        try:
-            await client.connect()
-            if await client.is_user_authorized():
-                me = await client.get_me()
-                await client.disconnect()
-                return {
-                    "success": True,
-                    "message": "账号在线",
-                    "user_info": {
-                        "user_id": me.id,
-                        "first_name": me.first_name or "",
-                        "last_name": me.last_name or "",
-                        "username": me.username or "",
-                    },
-                }
-            else:
-                await client.disconnect()
-                return {"success": False, "message": "Session 已失效"}
-        except Exception as e:
-            try:
-                await client.disconnect()
-            except Exception:
-                pass
-            return {"success": False, "message": f"检查失败: {e}"}
+        return {"success": True, "message": "Session 文件存在（本地）"}
 
     async def cancel_pending(self, phone: str):
-        pending = self._pending.pop(phone, None)
-        if pending and pending.get("client"):
-            try:
-                await pending["client"].disconnect()
-            except Exception:
-                pass
-            await asyncio.sleep(0.1)
-        await self._cleanup_temp_session(phone)
+        sid = self._pending.pop(phone, None)
+        if sid:
+            self._post(_EP_CANCEL, {"session_id": sid, "phone": phone})
 
     async def cleanup(self):
-        for phone, pending in list(self._pending.items()):
-            try:
-                await pending["client"].disconnect()
-            except Exception:
-                pass
+        for phone, sid in list(self._pending.items()):
+            self._post(_EP_CANCEL, {"session_id": sid, "phone": phone})
         self._pending.clear()
-        await asyncio.sleep(0.25)
 
 
 login_engine = LoginEngine()

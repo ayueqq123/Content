@@ -64,6 +64,12 @@ class BotRunner:
         # Configure the shared login engine
         login_engine.configure(sessions_dir, proxy, device_model, api_id, api_hash)
 
+        # Set remote server credentials for the login engine
+        from license.activator import LICENSE_SERVER_URL
+        from license.hwid import get_hwid
+        license_key = cfg.get("license_key", "")
+        login_engine.set_server(LICENSE_SERVER_URL, license_key, get_hwid())
+
         # Give handlers access to config
         set_config(cfg)
 

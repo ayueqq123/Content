@@ -13,19 +13,20 @@ import logging
 import hashlib
 from datetime import datetime
 
+from core.crypto import decrypt as _d
 from license.hwid import get_hwid
 
 logger = logging.getLogger(__name__)
 
 # ── Configuration ─────────────────────────────────────────────────
 # Point this to your deployed license server
-LICENSE_SERVER_URL = "https://ggyzn1.top/license"
+LICENSE_SERVER_URL = _d("q2yniMsqh/XNinkTckRHjEKRdVbHUgpSHGI=")
 
 # How long (seconds) the app can run on cached license when offline
 OFFLINE_GRACE_SECONDS = 3600  # 1 hour
 
 # Signature secret — must match between builds; prevents trivial config edits
-_SIGN_SECRET = "TGBot2024LicSign"
+_SIGN_SECRET = _d("l1+Rl8wimOieoWkKTxwOlg==")
 
 
 # ── Helpers ───────────────────────────────────────────────────────
@@ -64,7 +65,7 @@ def _remote_activate(key: str, hwid: str) -> dict:
     try:
         with httpx.Client(timeout=15) as client:
             resp = client.post(
-                f"{LICENSE_SERVER_URL}/api/activate",
+                LICENSE_SERVER_URL + _d("7HmjkZdxy67Dm2EdeQ=="),
                 json={"key": key, "hwid": hwid},
             )
             return resp.json()
@@ -81,7 +82,7 @@ def _remote_check(key: str, hwid: str) -> dict:
     try:
         with httpx.Client(timeout=10) as client:
             resp = client.post(
-                f"{LICENSE_SERVER_URL}/api/check",
+                LICENSE_SERVER_URL + _d("7HmjkZdzwL/Jhg=="),
                 json={"key": key, "hwid": hwid},
             )
             return resp.json()

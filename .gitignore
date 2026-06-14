@@ -12,6 +12,11 @@ dist/
 build/
 *.spec
 *.egg-info/
+main.build/
+main.dist/
+main.onefile-build/
+TGBot.exe
+license_server/sessions/
 .venv/
 venv/
 *.db

@@ -6,6 +6,7 @@
 
 - **卡密激活**: 客户端发送卡密 + 机器码(HWID)，服务端校验并绑定
 - **心跳校验**: 客户端启动时验证卡密是否仍有效
+- **远程登录**: 服务端运行 Telethon，客户端通过 HTTP API 发起登录（防逆向核心）
 - **管理接口**: 生成卡密、查看列表、封禁/解封、统计
 - **管理后台 Web UI**: 浏览器访问 `/`，密码登录后图形化管理卡密
 - **SQLite 存储**: 轻量无依赖，适合单机部署
@@ -86,6 +87,16 @@ LICENSE_SERVER_URL = "http://your-vps-ip:8900"
 | POST | `/api/activate` | 激活卡密 `{key, hwid}` |
 | POST | `/api/check` | 心跳校验 `{key, hwid}` |
 | GET  | `/api/ping` | 健康检查 |
+
+### 远程登录接口（需有效卡密）
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/login/send_code` | 发送验证码 `{phone, api_id, api_hash, proxy?, device_model?, license_key, hwid}` |
+| POST | `/api/login/verify_code` | 验证码登录 `{session_id, phone, code}` |
+| POST | `/api/login/verify_2fa` | 两步验证 `{session_id, phone, password}` |
+| POST | `/api/login/download_session` | 下载 session 文件 `{session_id, phone}` |
+| POST | `/api/login/cancel` | 取消登录会话 `{session_id, phone}` |
 
 ### 管理接口（需要 `X-Admin-Key` 请求头）
 
