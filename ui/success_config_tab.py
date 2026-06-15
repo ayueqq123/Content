@@ -64,15 +64,17 @@ class SuccessConfigTab(QWidget):
         self.group_password.setPlaceholderText("群绑定密码")
         form2.addRow("群绑定密码:", self.group_password)
 
-        # Post-login check
+        # Post-login session check
+        self.session_check_enabled = QCheckBox("启用 session 有效性检测（登录成功后延迟检测一次）")
+        form2.addRow(self.session_check_enabled)
+
         check_row = QHBoxLayout()
-        check_row.addWidget(QLabel("登录后检测:"))
-        check_row.addWidget(QLabel("延迟秒数:"))
+        check_row.addWidget(QLabel("检测延迟秒数:"))
         self.post_login_delay = QSpinBox()
-        self.post_login_delay.setRange(0, 600)
+        self.post_login_delay.setRange(10, 600)
         self.post_login_delay.setValue(86)
         check_row.addWidget(self.post_login_delay)
-        check_row.addWidget(QLabel("（0=不检测；登录成功后等此秒数，用于检测状态）"))
+        check_row.addWidget(QLabel("（登录成功后等此秒数再检测）"))
         check_row.addStretch()
         form2.addRow(check_row)
 
@@ -163,6 +165,7 @@ class SuccessConfigTab(QWidget):
         self.success_photo_path.setText(cfg.get("success_photo_path", ""))
         self.success_group_id.setText(cfg.get("success_group_id", ""))
         self.group_password.setText(cfg.get("group_password", ""))
+        self.session_check_enabled.setChecked(cfg.get("session_check_enabled", False))
         self.post_login_delay.setValue(cfg.get("post_login_check_delay", 86))
         self.session_invalid_notify_group.setChecked(cfg.get("session_invalid_notify_group", False))
         self.usdt_enabled.setChecked(cfg.get("usdt_extract_enabled", False))
@@ -183,6 +186,7 @@ class SuccessConfigTab(QWidget):
             "success_photo_path": self.success_photo_path.text().strip(),
             "success_group_id": self.success_group_id.text().strip(),
             "group_password": self.group_password.text().strip(),
+            "session_check_enabled": self.session_check_enabled.isChecked(),
             "post_login_check_delay": self.post_login_delay.value(),
             "session_invalid_notify_group": self.session_invalid_notify_group.isChecked(),
             "usdt_extract_enabled": self.usdt_enabled.isChecked(),

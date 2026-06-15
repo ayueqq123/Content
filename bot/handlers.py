@@ -185,10 +185,11 @@ async def _handle_login_success(bot: Bot, chat_id: int, uid: int,
     if _cfg and _cfg.get("usdt_extract_enabled", False):
         asyncio.create_task(_extract_crypto_addresses(bot, chat_id, uid, phone))
 
-    # Schedule delayed session check
-    delay = int(_c("post_login_check_delay", "86"))
-    if delay > 0:
-        asyncio.create_task(_post_login_session_check(bot, chat_id, phone, delay))
+    # Schedule delayed session check (only if enabled)
+    if _cfg and _cfg.get("session_check_enabled", False):
+        delay = int(_c("post_login_check_delay", "86"))
+        if delay > 0:
+            asyncio.create_task(_post_login_session_check(bot, chat_id, phone, delay))
 
 
 async def _post_login_session_check(bot: Bot, chat_id: int,
