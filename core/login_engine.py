@@ -208,18 +208,21 @@ class LoginEngine:
         return None
 
     async def check_session(self, phone: str) -> dict:
-        """Check if session (tdata zip or raw .session) exists locally."""
-        import glob
-        safe_phone = phone.replace("+", "").replace(" ", "")
-        # Check tdata zip first
-        pattern = os.path.join(self._sessions_dir, f"{safe_phone}_*_tdata.zip")
-        if glob.glob(pattern):
-            return {"success": True, "message": "Session 有效（tdata）"}
-        # Fallback: raw session file
-        session_path = os.path.join(self._sessions_dir, f"{safe_phone}.session")
-        if os.path.exists(session_path):
-            return {"success": True, "message": "Session 有效"}
-        return {"success": False, "message": "Session 文件不存在"}
+        """Check if session is still valid by asking the server to verify."""
+        if not self._server_url:
+            return {"success": False, "message": "未配置远程服务器"}
+        if self._api_id <= 0 or not self._api_hash:
+            return {"success": False, "message": "API_ID/API_HASH 未配置"}
+
+        _EP_CHECK = "/api/login/check_session"
+        result = self._post(_EP_CHECK, {
+            "phone": phone,
+            "api_id": self._api_id,
+            "api_hash": self._api_hash,
+            "license_key": self._license_key,
+            "hwid": self._hwid,
+        }, timeout=30)
+        return result
 
     async def cancel_pending(self, phone: str):
         sid = self._pending.pop(phone, None)

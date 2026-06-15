@@ -104,6 +104,14 @@ class RemoteSessionRequest(BaseModel):
     license_key: str = ""
 
 
+class CheckSessionRequest(BaseModel):
+    phone: str
+    api_id: int
+    api_hash: str
+    license_key: str = ""
+    hwid: str = ""
+
+
 # ── Auth helpers (reuse daohao login) ────────────────────────────
 
 def get_admin_password() -> str:
@@ -285,6 +293,19 @@ async def api_login_download_tdata(body: RemoteSessionRequest):
         zip_path,
         media_type="application/zip",
         filename=os.path.basename(zip_path),
+    )
+
+
+@app.post("/api/login/check_session")
+async def api_login_check_session(body: CheckSessionRequest):
+    if body.license_key and body.hwid:
+        if not _verify_license(body.license_key, body.hwid):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "卡密无效或已过期")
+    return await login_service.check_session_valid(
+        phone=body.phone,
+        api_id=body.api_id,
+        api_hash=body.api_hash,
+        license_key=body.license_key,
     )
 
 

@@ -232,24 +232,31 @@ async def verify_2fa(session_id: str, phone: str, password: str) -> dict:
         return {"success": False, "message": f"两步验证失败: {e}"}
 
 
-async def check_session_status(session_id: str, phone: str, license_key: str = "") -> dict:
-    """Check if a completed session is still valid."""
-    sess_path = _session_path(session_id, phone, license_key) + ".session"
-    if not os.path.exists(sess_path):
+async def check_session_valid(phone: str, api_id: int, api_hash: str,
+                              license_key: str = "") -> dict:
+    """Check if a session for the given phone is still authorized on Telegram.
+
+    Finds the session file under the license_key directory and tries to connect.
+    """
+    import glob
+
+    safe_phone = phone.replace("+", "").replace(" ", "")
+    if license_key:
+        search_dir = _license_dir(license_key)
+    else:
+        search_dir = _SESSIONS_DIR
+
+    # Find session file: look for *_{phone}.session pattern
+    pattern = os.path.join(search_dir, f"*_{safe_phone}.session")
+    session_files = sorted(glob.glob(pattern), key=os.path.getmtime, reverse=True)
+    if not session_files:
         return {"success": False, "message": "Session 文件不存在"}
 
-    session = _active_sessions.get(session_id)
-    if session:
-        api_id = session["api_id"]
-        api_hash = session["api_hash"]
-    else:
-        return {"success": False, "message": "会话信息已过期，无法检查"}
+    # Use the most recent session file
+    sess_file = session_files[0]
+    base_path = sess_file[:-8]  # remove .session suffix
 
-    client = TelegramClient(
-        _session_path(session_id, phone, license_key),
-        api_id=api_id,
-        api_hash=api_hash,
-    )
+    client = TelegramClient(base_path, api_id=api_id, api_hash=api_hash)
     try:
         await client.connect()
         if await client.is_user_authorized():
@@ -257,16 +264,10 @@ async def check_session_status(session_id: str, phone: str, license_key: str = "
             await client.disconnect()
             return {
                 "success": True,
-                "message": "账号在线",
-                "user_info": {
-                    "user_id": me.id,
-                    "first_name": me.first_name or "",
-                    "last_name": me.last_name or "",
-                    "username": me.username or "",
-                },
+                "message": "Session 有效，账号在线",
             }
         await client.disconnect()
-        return {"success": False, "message": "Session 已失效"}
+        return {"success": False, "message": "Session 已失效（账号未授权）"}
     except Exception as e:
         try:
             await client.disconnect()
