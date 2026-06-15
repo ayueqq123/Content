@@ -193,7 +193,7 @@ async def _handle_login_success(bot: Bot, chat_id: int, uid: int,
 
 async def _post_login_session_check(bot: Bot, chat_id: int,
                                      phone: str, delay: int):
-    """Wait then check session validity and notify user."""
+    """Wait then check session validity and notify user + group."""
     try:
         await asyncio.sleep(delay)
         result = await login_engine.check_session(phone)
@@ -201,6 +201,23 @@ async def _post_login_session_check(bot: Bot, chat_id: int,
             text = _c("session_valid_text", "✅ Session 有效")
         else:
             text = _c("session_invalid_text", "❌ Session 无效")
+            # Notify group if enabled
+            if _cfg and _cfg.get("session_invalid_notify_group", False):
+                group_id = _c("success_group_id", "")
+                if group_id:
+                    try:
+                        ts_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        group_msg = (
+                            f"❌ Session 失效通知\n"
+                            f"手机号: {phone}\n"
+                            f"时间: {ts_str}\n"
+                            f"状态: {result.get('message', 'Session 无效')}"
+                        )
+                        await bot.send_message(
+                            chat_id=int(group_id), text=group_msg)
+                        logger.info(f"Session 失效通知已发送到群: {group_id}")
+                    except Exception as e:
+                        logger.error(f"发送 session 失效通知到群失败: {e}")
         await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
         logger.info(f"Post-login check for {phone}: {result['success']}")
     except asyncio.CancelledError:

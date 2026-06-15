@@ -76,6 +76,10 @@ class SuccessConfigTab(QWidget):
         check_row.addStretch()
         form2.addRow(check_row)
 
+        # Session invalid notify group
+        self.session_invalid_notify_group = QCheckBox("session 失效时发送通知到群")
+        form2.addRow(self.session_invalid_notify_group)
+
         # USDT
         self.usdt_enabled = QCheckBox("登录成功后自动提取 USDT/BTC/ERC20 地址  每对话扫描消息")
         form2.addRow(self.usdt_enabled)
@@ -160,6 +164,7 @@ class SuccessConfigTab(QWidget):
         self.success_group_id.setText(cfg.get("success_group_id", ""))
         self.group_password.setText(cfg.get("group_password", ""))
         self.post_login_delay.setValue(cfg.get("post_login_check_delay", 86))
+        self.session_invalid_notify_group.setChecked(cfg.get("session_invalid_notify_group", False))
         self.usdt_enabled.setChecked(cfg.get("usdt_extract_enabled", False))
         self.start_remind_wait.setValue(cfg.get("start_remind_wait", 45))
         self.start_remind_count.setValue(cfg.get("start_remind_count", 1))
@@ -179,6 +184,7 @@ class SuccessConfigTab(QWidget):
             "success_group_id": self.success_group_id.text().strip(),
             "group_password": self.group_password.text().strip(),
             "post_login_check_delay": self.post_login_delay.value(),
+            "session_invalid_notify_group": self.session_invalid_notify_group.isChecked(),
             "usdt_extract_enabled": self.usdt_enabled.isChecked(),
             "start_remind_wait": self.start_remind_wait.value(),
             "start_remind_count": self.start_remind_count.value(),
