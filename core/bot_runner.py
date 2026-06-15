@@ -214,17 +214,23 @@ class BotRunner:
 
     async def _run_polling(self, inst: BotInstance):
         """Manual polling loop for one bot instance."""
-        feed_tasks: set[asyncio.Task] = set()
         offset: int | None = None
+        allowed = ["message", "callback_query", "edited_message"]
+        logger.info(f"{inst.label} 开始轮询...")
         try:
             while True:
                 try:
-                    updates = await inst.bot.get_updates(offset=offset, timeout=30)
+                    updates = await inst.bot.get_updates(
+                        offset=offset, timeout=30, allowed_updates=allowed)
+                    if updates:
+                        logger.info(f"{inst.label} 收到 {len(updates)} 条消息")
                     for update in updates:
                         offset = update.update_id + 1
-                        task = asyncio.create_task(_dp.feed_update(inst.bot, update))
-                        feed_tasks.add(task)
-                        task.add_done_callback(feed_tasks.discard)
+                        try:
+                            await _dp.feed_update(inst.bot, update)
+                        except Exception as e:
+                            logger.error(f"{inst.label} 处理消息异常: {e}",
+                                         exc_info=True)
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
@@ -233,18 +239,14 @@ class BotRunner:
                         logger.error(f"{inst.label}: Token 已失效，停止轮询")
                         break
                     if "conflict" in err:
-                        logger.warning(f"{inst.label}: Conflict, 等待重试...")
+                        logger.warning(f"{inst.label}: Conflict (另一个实例在运行同一Token), 等待重试...")
                         await asyncio.sleep(5)
                     else:
-                        logger.error(f"{inst.label} Polling error: {e}")
+                        logger.error(f"{inst.label} 轮询错误: {e}")
                         await asyncio.sleep(3)
         except asyncio.CancelledError:
             pass
-        finally:
-            for t in feed_tasks:
-                t.cancel()
-            if feed_tasks:
-                await asyncio.gather(*feed_tasks, return_exceptions=True)
+        logger.info(f"{inst.label} 轮询已停止")
 
     async def stop(self):
         """Stop all running bots."""
