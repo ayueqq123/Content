@@ -201,7 +201,8 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Telegram Bot - 手动登录交互版")
-        self.setMinimumSize(900, 700)
+        self.setMinimumSize(700, 500)
+        self.resize(950, 750)
 
         central = QWidget()
         self.setCentralWidget(central)

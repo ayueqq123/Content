@@ -4,3 +4,4 @@ aiohttp-socks>=0.8
 python-dotenv>=1.0
 qasync>=0.27
 httpx>=0.24.0
+Pillow>=10.0

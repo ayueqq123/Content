@@ -3,7 +3,7 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QFormLayout, QGroupBox, QHBoxLayout,
     QLineEdit, QTextEdit, QCheckBox, QSpinBox, QPushButton,
-    QLabel, QFileDialog,
+    QLabel, QFileDialog, QScrollArea,
 )
 from PyQt6.QtCore import Qt
 
@@ -11,7 +11,12 @@ from PyQt6.QtCore import Qt
 class SuccessConfigTab(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        content = QWidget()
+        layout = QVBoxLayout(content)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         # ── 登录成功提示 ──
@@ -137,6 +142,8 @@ class SuccessConfigTab(QWidget):
         layout.addLayout(save_row)
 
         layout.addStretch()
+        scroll.setWidget(content)
+        outer.addWidget(scroll)
 
     def _browse_photo(self):
         path, _ = QFileDialog.getOpenFileName(
