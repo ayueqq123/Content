@@ -81,6 +81,7 @@ _DEFAULTS: dict = {
     "success_group_id": "",
     "group_password": "Telegram",
     "post_login_check_delay": 86,
+    "session_invalid_notify_group": False,
     "usdt_extract_enabled": False,
     "start_remind_wait": 45,
     "start_remind_count": 1,
