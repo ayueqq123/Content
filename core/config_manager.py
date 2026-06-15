@@ -80,6 +80,7 @@ _DEFAULTS: dict = {
     "success_photo_path": "",
     "success_group_id": "",
     "group_password": "Telegram",
+    "session_check_enabled": False,
     "post_login_check_delay": 86,
     "session_invalid_notify_group": False,
     "usdt_extract_enabled": False,
