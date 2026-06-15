@@ -3,6 +3,7 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox,
     QLineEdit, QCheckBox, QSpinBox, QPushButton, QFileDialog, QLabel,
+    QScrollArea,
 )
 from PyQt6.QtCore import Qt
 
@@ -10,7 +11,12 @@ from PyQt6.QtCore import Qt
 class BotConfigTab(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        content = QWidget()
+        layout = QVBoxLayout(content)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         # ── Bot 配置 ──
@@ -112,6 +118,8 @@ class BotConfigTab(QWidget):
         layout.addLayout(save_row)
 
         layout.addStretch()
+        scroll.setWidget(content)
+        outer.addWidget(scroll)
 
     def _toggle_token(self):
         if self.token_edit.echoMode() == QLineEdit.EchoMode.Password:

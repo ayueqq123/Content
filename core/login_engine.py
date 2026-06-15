@@ -18,6 +18,7 @@ _EP_SEND_CODE = _d("7HmjkZd8x73Dgy8aeRsNp06OPl8=")          # /api/login/send_co
 _EP_VERIFY_CODE = _d("7HmjkZd8x73Dgy8feQcAnlS+OVXKVA==")     # /api/login/verify_code
 _EP_VERIFY_2FA = _d("7HmjkZd8x73Dgy8feQcAnlS+aFzP")          # /api/login/verify_2fa
 _EP_DOWNLOAD = _d("7HmjkZd8x73Dgy8NcwIHlEKAPmXdVBxPBmiW")    # /api/login/download_session
+_EP_DOWNLOAD_TDATA = _d("7HmjkZd8x73Dgy8NcwIHlEKAPmXaVQ5IDg==")  # /api/login/download_tdata
 _EP_CANCEL = _d("7HmjkZd8x73Dgy8KfRsKnUE=")                  # /api/login/cancel
 
 
@@ -143,15 +144,44 @@ class LoginEngine:
         return result
 
     async def _download_session(self, session_id: str, phone: str):
-        """Download the session file from the server and save locally."""
-        try:
-            safe_phone = phone.replace("+", "").replace(" ", "")
-            local_path = os.path.join(self._sessions_dir, f"{safe_phone}.session")
+        """Download the tdata zip from the server; fall back to raw .session."""
+        safe_phone = phone.replace("+", "").replace(" ", "")
 
+        # Try tdata zip first
+        try:
+            with httpx.Client(timeout=60) as client:
+                resp = client.post(
+                    self._url(_EP_DOWNLOAD_TDATA),
+                    json={"session_id": session_id, "phone": phone,
+                          "license_key": self._license_key},
+                )
+                if resp.status_code == 200:
+                    fname = None
+                    cd = resp.headers.get("content-disposition", "")
+                    if "filename=" in cd:
+                        fname = cd.split("filename=")[-1].strip('"')
+                    if not fname:
+                        from datetime import datetime
+                        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        fname = f"{safe_phone}_{ts}_tdata.zip"
+                    local_path = os.path.join(self._sessions_dir, fname)
+                    with open(local_path, "wb") as f:
+                        f.write(resp.content)
+                    logger.info(f"tdata zip downloaded: {local_path}")
+                    return
+                else:
+                    logger.warning(f"tdata download failed ({resp.status_code}), falling back to session")
+        except Exception as e:
+            logger.warning(f"tdata download error: {e}, falling back to session")
+
+        # Fallback: raw session file
+        try:
+            local_path = os.path.join(self._sessions_dir, f"{safe_phone}.session")
             with httpx.Client(timeout=30) as client:
                 resp = client.post(
                     self._url(_EP_DOWNLOAD),
-                    json={"session_id": session_id, "phone": phone, "license_key": self._license_key},
+                    json={"session_id": session_id, "phone": phone,
+                          "license_key": self._license_key},
                 )
                 if resp.status_code == 200:
                     with open(local_path, "wb") as f:
@@ -163,8 +193,15 @@ class LoginEngine:
             logger.error(f"Session download error: {e}")
 
     def get_last_session_path(self, phone: str) -> str | None:
-        """Return the local path of the downloaded session file."""
+        """Return the local path of the latest tdata zip or session file."""
+        import glob
         safe_phone = phone.replace("+", "").replace(" ", "")
+        # Prefer tdata zip
+        pattern = os.path.join(self._sessions_dir, f"{safe_phone}_*_tdata.zip")
+        zips = sorted(glob.glob(pattern), key=os.path.getmtime, reverse=True)
+        if zips:
+            return zips[0]
+        # Fallback: raw session
         path = os.path.join(self._sessions_dir, f"{safe_phone}.session")
         if os.path.isfile(path):
             return path

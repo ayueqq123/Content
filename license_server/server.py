@@ -275,6 +275,19 @@ async def api_login_download_session(body: RemoteSessionRequest):
     )
 
 
+@app.post("/api/login/download_tdata")
+async def api_login_download_tdata(body: RemoteSessionRequest):
+    zip_path = await login_service.get_tdata_zip_path(
+        body.session_id, body.phone, body.license_key)
+    if not zip_path:
+        raise HTTPException(500, "tdata 转换失败或 session 不存在")
+    return FileResponse(
+        zip_path,
+        media_type="application/zip",
+        filename=os.path.basename(zip_path),
+    )
+
+
 @app.post("/api/login/cancel")
 async def api_login_cancel(body: RemoteSessionRequest):
     await login_service.cancel_session(body.session_id)
