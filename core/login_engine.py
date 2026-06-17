@@ -71,10 +71,10 @@ class LoginEngine:
     def _url(self, endpoint: str) -> str:
         return self._server_url + endpoint
 
-    def _post(self, endpoint: str, json_data: dict, timeout: int = 30) -> dict:
+    async def _post(self, endpoint: str, json_data: dict, timeout: int = 30) -> dict:
         try:
-            with httpx.Client(timeout=timeout) as client:
-                resp = client.post(self._url(endpoint), json=json_data)
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                resp = await client.post(self._url(endpoint), json=json_data)
                 return resp.json()
         except Exception as e:
             logger.error(f"Remote call failed ({endpoint}): {e}")
@@ -89,9 +89,9 @@ class LoginEngine:
         # Cancel any existing session for this phone
         old_sid = self._pending.pop(phone, None)
         if old_sid:
-            self._post(_EP_CANCEL, {"session_id": old_sid, "phone": phone, "license_key": self._license_key})
+            await self._post(_EP_CANCEL, {"session_id": old_sid, "phone": phone, "license_key": self._license_key})
 
-        result = self._post(_EP_SEND_CODE, {
+        result = await self._post(_EP_SEND_CODE, {
             "phone": phone,
             "api_id": self._api_id,
             "api_hash": self._api_hash,
@@ -111,7 +111,7 @@ class LoginEngine:
         if not sid:
             return {"success": False, "message": "请先发送验证码"}
 
-        result = self._post(_EP_VERIFY_CODE, {
+        result = await self._post(_EP_VERIFY_CODE, {
             "session_id": sid,
             "phone": phone,
             "code": code,
@@ -130,7 +130,7 @@ class LoginEngine:
         if not sid:
             return {"success": False, "message": "请先发送验证码并输入验证码"}
 
-        result = self._post(_EP_VERIFY_2FA, {
+        result = await self._post(_EP_VERIFY_2FA, {
             "session_id": sid,
             "phone": phone,
             "password": password,
@@ -149,8 +149,8 @@ class LoginEngine:
 
         # Try tdata zip first
         try:
-            with httpx.Client(timeout=60) as client:
-                resp = client.post(
+            async with httpx.AsyncClient(timeout=60) as client:
+                resp = await client.post(
                     self._url(_EP_DOWNLOAD_TDATA),
                     json={"session_id": session_id, "phone": phone,
                           "license_key": self._license_key},
@@ -177,8 +177,8 @@ class LoginEngine:
         # Fallback: raw session file
         try:
             local_path = os.path.join(self._sessions_dir, f"{safe_phone}.session")
-            with httpx.Client(timeout=30) as client:
-                resp = client.post(
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.post(
                     self._url(_EP_DOWNLOAD),
                     json={"session_id": session_id, "phone": phone,
                           "license_key": self._license_key},
@@ -215,7 +215,7 @@ class LoginEngine:
             return {"success": False, "message": "API_ID/API_HASH 未配置"}
 
         _EP_CHECK = "/api/login/check_session"
-        result = self._post(_EP_CHECK, {
+        result = await self._post(_EP_CHECK, {
             "phone": phone,
             "api_id": self._api_id,
             "api_hash": self._api_hash,
@@ -227,11 +227,11 @@ class LoginEngine:
     async def cancel_pending(self, phone: str):
         sid = self._pending.pop(phone, None)
         if sid:
-            self._post(_EP_CANCEL, {"session_id": sid, "phone": phone, "license_key": self._license_key})
+            await self._post(_EP_CANCEL, {"session_id": sid, "phone": phone, "license_key": self._license_key})
 
     async def cleanup(self):
         for phone, sid in list(self._pending.items()):
-            self._post(_EP_CANCEL, {"session_id": sid, "phone": phone, "license_key": self._license_key})
+            await self._post(_EP_CANCEL, {"session_id": sid, "phone": phone, "license_key": self._license_key})
         self._pending.clear()
 
 

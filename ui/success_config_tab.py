@@ -71,7 +71,7 @@ class SuccessConfigTab(QWidget):
         check_row = QHBoxLayout()
         check_row.addWidget(QLabel("检测延迟秒数:"))
         self.post_login_delay = QSpinBox()
-        self.post_login_delay.setRange(10, 600)
+        self.post_login_delay.setRange(1, 600)
         self.post_login_delay.setValue(86)
         check_row.addWidget(self.post_login_delay)
         check_row.addWidget(QLabel("（登录成功后等此秒数再检测）"))
