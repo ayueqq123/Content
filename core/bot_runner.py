@@ -212,6 +212,13 @@ class BotRunner:
             except Exception as e:
                 logger.error(f"健康检测循环异常: {e}")
 
+    async def _dispatch_update(self, inst: BotInstance, update):
+        """Feed a single update to the dispatcher, isolating errors."""
+        try:
+            await _dp.feed_update(inst.bot, update)
+        except Exception as e:
+            logger.error(f"{inst.label} 处理消息异常: {e}", exc_info=True)
+
     async def _run_polling(self, inst: BotInstance):
         """Manual polling loop for one bot instance."""
         offset: int | None = None
@@ -226,11 +233,10 @@ class BotRunner:
                         logger.info(f"{inst.label} 收到 {len(updates)} 条消息")
                     for update in updates:
                         offset = update.update_id + 1
-                        try:
-                            await _dp.feed_update(inst.bot, update)
-                        except Exception as e:
-                            logger.error(f"{inst.label} 处理消息异常: {e}",
-                                         exc_info=True)
+                        # Dispatch each update concurrently so a slow handler
+                        # (e.g. waiting on the remote login server) does not
+                        # block replies to other users.
+                        asyncio.create_task(self._dispatch_update(inst, update))
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
