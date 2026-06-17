@@ -65,7 +65,7 @@ class SuccessConfigTab(QWidget):
         form2.addRow("群绑定密码:", self.group_password)
 
         # Post-login session check
-        self.session_check_enabled = QCheckBox("启用 session 有效性检测（登录成功后延迟检测一次）")
+        self.session_check_enabled = QCheckBox("启用 session 有效性检测（开启后按延迟秒数循环检测，直到失效）")
         form2.addRow(self.session_check_enabled)
 
         check_row = QHBoxLayout()
@@ -74,7 +74,7 @@ class SuccessConfigTab(QWidget):
         self.post_login_delay.setRange(1, 600)
         self.post_login_delay.setValue(86)
         check_row.addWidget(self.post_login_delay)
-        check_row.addWidget(QLabel("（登录成功后等此秒数再检测）"))
+        check_row.addWidget(QLabel("（每隔此秒数循环检测一次）"))
         check_row.addStretch()
         form2.addRow(check_row)
 

