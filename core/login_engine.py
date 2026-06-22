@@ -75,7 +75,13 @@ class LoginEngine:
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
                 resp = await client.post(self._url(endpoint), json=json_data)
-                return resp.json()
+                data = resp.json()
+                if not isinstance(data, dict):
+                    return {"success": False, "message": f"服务器返回格式异常"}
+                if "success" not in data:
+                    data["success"] = False
+                    data.setdefault("message", f"服务器响应缺少 success 字段")
+                return data
         except Exception as e:
             logger.error(f"Remote call failed ({endpoint}): {e}")
             return {"success": False, "message": f"网络请求失败: {e}"}

