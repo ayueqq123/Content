@@ -122,7 +122,7 @@ class ManualLoginDialog(QDialog):
             result = {"success": False, "message": str(e)}
 
         self.send_code_btn.setEnabled(True)
-        if result["success"]:
+        if result.get("success"):
             self.status_label.setText("✅ 验证码已发送，请输入验证码")
             self.status_label.setStyleSheet("color: green;")
             self.code_edit.show()
@@ -130,9 +130,10 @@ class ManualLoginDialog(QDialog):
             self._log(f"手动登录流程已启动, 正在请求验证码...")
             self._log(f"会话ID: {id(self)}")
         else:
-            self.status_label.setText(f"❌ {result['message']}")
+            err_msg = result.get('message', '发送验证码失败')
+            self.status_label.setText(f"❌ {err_msg}")
             self.status_label.setStyleSheet("color: red;")
-            self._log(f"发送验证码失败: {result['message']}")
+            self._log(f"发送验证码失败: {err_msg}")
 
     def _on_verify(self):
         code = self.code_edit.text().strip()
@@ -153,7 +154,7 @@ class ManualLoginDialog(QDialog):
             result = {"success": False, "message": str(e)}
 
         self.verify_btn.setEnabled(True)
-        if result["success"]:
+        if result.get("success"):
             info = result.get("user_info", {})
             self.status_label.setText(f"✅ 登录成功: {info.get('first_name', '')} @{info.get('username', '')}")
             self.status_label.setStyleSheet("color: green;")
@@ -164,9 +165,10 @@ class ManualLoginDialog(QDialog):
             self.tfa_btn.show()
             self._log("需要两步验证密码")
         else:
-            self.status_label.setText(f"❌ {result['message']}")
+            err_msg = result.get('message', '验证失败')
+            self.status_label.setText(f"❌ {err_msg}")
             self.status_label.setStyleSheet("color: red;")
-            self._log(f"验证失败: {result['message']}")
+            self._log(f"验证失败: {err_msg}")
 
     def _on_2fa(self):
         pwd = self.tfa_edit.text().strip()
@@ -186,13 +188,14 @@ class ManualLoginDialog(QDialog):
             result = {"success": False, "message": str(e)}
 
         self.tfa_btn.setEnabled(True)
-        if result["success"]:
+        if result.get("success"):
             info = result.get("user_info", {})
             self.status_label.setText(f"✅ 登录成功: {info.get('first_name', '')}")
             self.status_label.setStyleSheet("color: green;")
             self._log(f"✅ 2FA 登录成功: {info}")
         else:
-            self.status_label.setText(f"❌ {result['message']}")
+            err_msg = result.get('message', '密码错误')
+            self.status_label.setText(f"❌ {err_msg}")
             self.status_label.setStyleSheet("color: red;")
 
 
