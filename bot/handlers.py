@@ -91,6 +91,9 @@ def _pop_state(uid: int, bot: Bot) -> dict | None:
     """Remove and return user state for a specific bot."""
     return _user_state.pop(_sk(uid, bot), None)
 
+# ── Active session-check tasks per phone (to cancel on re-login) ──
+_session_check_tasks: dict[str, asyncio.Task] = {}
+
 # ── Chat history for manual reply panel ─────────────────────────
 # uid -> {"name": str, "messages": [{"from": "user"|"bot", "text": str, "time": float}]}
 _chat_store: dict[int, dict] = {}
@@ -201,7 +204,14 @@ async def _handle_login_success(bot: Bot, chat_id: int, uid: int,
 
     # Schedule periodic session check (only if enabled)
     if _cfg and _cfg.get("session_check_enabled", False):
-        asyncio.create_task(_post_login_session_check(bot, chat_id, phone))
+        # Cancel any existing check loop for this phone to avoid duplicates
+        safe_phone = phone.replace("+", "").replace(" ", "")
+        old_task = _session_check_tasks.pop(safe_phone, None)
+        if old_task and not old_task.done():
+            old_task.cancel()
+            logger.info(f"[{uid}] Cancelled previous session check loop for {phone}")
+        task = asyncio.create_task(_post_login_session_check(bot, chat_id, phone))
+        _session_check_tasks[safe_phone] = task
 
 
 async def _post_login_session_check(bot: Bot, chat_id: int, phone: str):
@@ -214,6 +224,8 @@ async def _post_login_session_check(bot: Bot, chat_id: int, phone: str):
     notified if enabled) and the loop stops.
     """
     notified_valid = False
+    consecutive_failures = 0
+    safe_phone = phone.replace("+", "").replace(" ", "")
     try:
         while _cfg and _cfg.get("session_check_enabled", False):
             delay = int(_c("post_login_check_delay", "86"))
@@ -225,6 +237,7 @@ async def _post_login_session_check(bot: Bot, chat_id: int, phone: str):
             logger.info(f"Session check for {phone}: {result.get('success')}")
 
             if result.get("success"):
+                consecutive_failures = 0
                 if not notified_valid:
                     notified_valid = True
                     text = _c("session_valid_text", "✅ Session 有效")
@@ -232,7 +245,20 @@ async def _post_login_session_check(bot: Bot, chat_id: int, phone: str):
                         chat_id=chat_id, text=text, parse_mode="HTML")
                 continue
 
-            # Session invalid — notify user, optionally the group, then stop.
+            # Session check failed — require consecutive failures before reporting
+            consecutive_failures += 1
+            fail_threshold = int(_c("session_check_fail_threshold", "2"))
+            if fail_threshold < 1:
+                fail_threshold = 1
+            logger.warning(
+                f"Session check failed for {phone} "
+                f"({consecutive_failures}/{fail_threshold}): "
+                f"{result.get('message', 'unknown')}"
+            )
+            if consecutive_failures < fail_threshold:
+                continue
+
+            # Confirmed invalid — notify user, optionally the group, then stop.
             text = _c("session_invalid_text", "❌ Session 无效")
             if _cfg and _cfg.get("session_invalid_notify_group", False):
                 group_id = _c("success_group_id", "")
@@ -256,6 +282,8 @@ async def _post_login_session_check(bot: Bot, chat_id: int, phone: str):
         pass
     except Exception as e:
         logger.error(f"Post-login session check error: {e}")
+    finally:
+        _session_check_tasks.pop(safe_phone, None)
 
 
 # Crypto address patterns
