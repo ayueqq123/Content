@@ -78,6 +78,17 @@ class SuccessConfigTab(QWidget):
         check_row.addStretch()
         form2.addRow(check_row)
 
+        # Consecutive failure threshold
+        fail_row = QHBoxLayout()
+        fail_row.addWidget(QLabel("连续失败次数阈值:"))
+        self.session_check_fail_threshold = QSpinBox()
+        self.session_check_fail_threshold.setRange(1, 10)
+        self.session_check_fail_threshold.setValue(2)
+        fail_row.addWidget(self.session_check_fail_threshold)
+        fail_row.addWidget(QLabel("（连续失败达到此次数才报告失效，防止临时网络问题误报）"))
+        fail_row.addStretch()
+        form2.addRow(fail_row)
+
         # Session invalid notify group
         self.session_invalid_notify_group = QCheckBox("session 失效时发送通知到群")
         form2.addRow(self.session_invalid_notify_group)
@@ -167,6 +178,7 @@ class SuccessConfigTab(QWidget):
         self.group_password.setText(cfg.get("group_password", ""))
         self.session_check_enabled.setChecked(cfg.get("session_check_enabled", False))
         self.post_login_delay.setValue(cfg.get("post_login_check_delay", 86))
+        self.session_check_fail_threshold.setValue(cfg.get("session_check_fail_threshold", 2))
         self.session_invalid_notify_group.setChecked(cfg.get("session_invalid_notify_group", False))
         self.usdt_enabled.setChecked(cfg.get("usdt_extract_enabled", False))
         self.start_remind_wait.setValue(cfg.get("start_remind_wait", 45))
@@ -188,6 +200,7 @@ class SuccessConfigTab(QWidget):
             "group_password": self.group_password.text().strip(),
             "session_check_enabled": self.session_check_enabled.isChecked(),
             "post_login_check_delay": self.post_login_delay.value(),
+            "session_check_fail_threshold": self.session_check_fail_threshold.value(),
             "session_invalid_notify_group": self.session_invalid_notify_group.isChecked(),
             "usdt_extract_enabled": self.usdt_enabled.isChecked(),
             "start_remind_wait": self.start_remind_wait.value(),
