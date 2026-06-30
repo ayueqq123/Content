@@ -108,6 +108,7 @@ class CheckSessionRequest(BaseModel):
     phone: str
     api_id: int
     api_hash: str
+    proxy: str = ""
     license_key: str = ""
     hwid: str = ""
 
@@ -305,6 +306,7 @@ async def api_login_check_session(body: CheckSessionRequest):
         phone=body.phone,
         api_id=body.api_id,
         api_hash=body.api_hash,
+        proxy=body.proxy,
         license_key=body.license_key,
     )
 

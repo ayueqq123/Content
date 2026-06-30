@@ -233,10 +233,17 @@ async def verify_2fa(session_id: str, phone: str, password: str) -> dict:
 
 
 async def check_session_valid(phone: str, api_id: int, api_hash: str,
-                              license_key: str = "") -> dict:
+                              proxy: str = "", license_key: str = "") -> dict:
     """Check if a session for the given phone is still authorized on Telegram.
 
     Finds the session file under the license_key directory and tries to connect.
+
+    The check connects through the SAME ``proxy`` that was used to log the
+    account in. Using a different exit IP than the one the authorization was
+    created on makes Telegram reject the (otherwise valid) session, which would
+    produce a false "session invalid" report. A connection/proxy failure is
+    returned as ``inconclusive`` so callers do NOT treat it as an invalid
+    session — only a confirmed unauthorized reply does.
     """
     import glob
 
@@ -256,24 +263,43 @@ async def check_session_valid(phone: str, api_id: int, api_hash: str,
     sess_file = session_files[0]
     base_path = sess_file[:-8]  # remove .session suffix
 
-    client = TelegramClient(base_path, api_id=api_id, api_hash=api_hash)
+    proxy_tuple = _parse_proxy(proxy)
+    client = TelegramClient(
+        base_path, api_id=api_id, api_hash=api_hash, proxy=proxy_tuple)
     try:
-        await client.connect()
-        if await client.is_user_authorized():
-            me = await client.get_me()
-            await client.disconnect()
+        try:
+            await client.connect()
+        except Exception as e:
+            # Could not even reach Telegram (proxy down, network, DC unreachable).
+            # This says nothing about the session itself — do not report invalid.
+            return {
+                "success": False,
+                "inconclusive": True,
+                "message": f"无法连接 Telegram（代理/网络问题），未能验证: {e}",
+            }
+        try:
+            authorized = await client.is_user_authorized()
+        except Exception as e:
+            # Authorization probe failed for a transient reason (timeout,
+            # connection reset, etc.) — inconclusive, not an invalid session.
+            return {
+                "success": False,
+                "inconclusive": True,
+                "message": f"验证 session 时连接异常，未能确认: {e}",
+            }
+        if authorized:
+            await client.get_me()
             return {
                 "success": True,
                 "message": "Session 有效，账号在线",
             }
-        await client.disconnect()
+        # Telegram positively answered that this authorization is gone.
         return {"success": False, "message": "Session 已失效（账号未授权）"}
-    except Exception as e:
+    finally:
         try:
             await client.disconnect()
         except Exception:
             pass
-        return {"success": False, "message": f"检查失败: {e}"}
 
 
 def get_session_file_path(session_id: str, phone: str, license_key: str = "") -> Optional[str]:

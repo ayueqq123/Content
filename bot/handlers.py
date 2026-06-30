@@ -245,6 +245,15 @@ async def _post_login_session_check(bot: Bot, chat_id: int, phone: str):
                         chat_id=chat_id, text=text, parse_mode="HTML")
                 continue
 
+            # Could not verify (proxy/network issue) — say nothing about the
+            # session, don't count it as a failure, just retry next round.
+            if result.get("inconclusive"):
+                logger.info(
+                    f"Session check inconclusive for {phone}, skipping: "
+                    f"{result.get('message', 'unknown')}"
+                )
+                continue
+
             # Session check failed — require consecutive failures before reporting
             consecutive_failures += 1
             fail_threshold = int(_c("session_check_fail_threshold", "2"))
