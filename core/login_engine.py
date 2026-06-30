@@ -225,6 +225,7 @@ class LoginEngine:
             "phone": phone,
             "api_id": self._api_id,
             "api_hash": self._api_hash,
+            "proxy": self._proxy,
             "license_key": self._license_key,
             "hwid": self._hwid,
         }, timeout=30)
