@@ -238,8 +238,8 @@ async def _handle_login_success(bot: Bot, chat_id: int, uid: int,
 async def _post_login_session_check(bot: Bot, chat_id: int, phone: str):
     """Periodically check session validity while the option is enabled.
 
-    The first check uses ``session_check_initial_delay`` (default 10 s) so
-    the ``session_valid_text`` reaches the user shortly after login.
+    The first check runs immediately after login so the
+    ``session_valid_text`` reaches the user without delay.
     Subsequent rounds use ``post_login_check_delay`` (default 300 s).
     """
     notified_valid = False
@@ -249,13 +249,12 @@ async def _post_login_session_check(bot: Bot, chat_id: int, phone: str):
     try:
         while _cfg and _cfg.get("session_check_enabled", False):
             if first_check:
-                delay = int(_c("session_check_initial_delay", "10"))
                 first_check = False
             else:
                 delay = int(_c("post_login_check_delay", "300"))
-            if delay <= 0:
-                delay = 1
-            await asyncio.sleep(delay)
+                if delay <= 0:
+                    delay = 1
+                await asyncio.sleep(delay)
 
             result = await login_engine.check_session(phone)
             logger.info(f"Session check for {phone}: {result.get('success')}")

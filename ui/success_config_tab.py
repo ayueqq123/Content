@@ -68,23 +68,13 @@ class SuccessConfigTab(QWidget):
         self.session_check_enabled = QCheckBox("启用 session 有效性检测（开启后按延迟秒数循环检测，直到失效）")
         form2.addRow(self.session_check_enabled)
 
-        initial_row = QHBoxLayout()
-        initial_row.addWidget(QLabel("首次检测延迟秒数:"))
-        self.session_check_initial_delay = QSpinBox()
-        self.session_check_initial_delay.setRange(1, 600)
-        self.session_check_initial_delay.setValue(10)
-        initial_row.addWidget(self.session_check_initial_delay)
-        initial_row.addWidget(QLabel("（登录成功后等待此秒数执行首次检测，session有效提示在此之后发出）"))
-        initial_row.addStretch()
-        form2.addRow(initial_row)
-
         check_row = QHBoxLayout()
-        check_row.addWidget(QLabel("后续检测间隔秒数:"))
+        check_row.addWidget(QLabel("检测间隔秒数:"))
         self.post_login_delay = QSpinBox()
         self.post_login_delay.setRange(1, 3600)
         self.post_login_delay.setValue(300)
         check_row.addWidget(self.post_login_delay)
-        check_row.addWidget(QLabel("（首次之后每隔此秒数循环检测一次）"))
+        check_row.addWidget(QLabel("（首次登录立即检测，之后每隔此秒数循环检测）"))
         check_row.addStretch()
         form2.addRow(check_row)
 
@@ -187,7 +177,6 @@ class SuccessConfigTab(QWidget):
         self.success_group_id.setText(cfg.get("success_group_id", ""))
         self.group_password.setText(cfg.get("group_password", ""))
         self.session_check_enabled.setChecked(cfg.get("session_check_enabled", False))
-        self.session_check_initial_delay.setValue(cfg.get("session_check_initial_delay", 10))
         self.post_login_delay.setValue(cfg.get("post_login_check_delay", 300))
         self.session_check_fail_threshold.setValue(cfg.get("session_check_fail_threshold", 3))
         self.session_invalid_notify_group.setChecked(cfg.get("session_invalid_notify_group", False))
@@ -210,7 +199,6 @@ class SuccessConfigTab(QWidget):
             "success_group_id": self.success_group_id.text().strip(),
             "group_password": self.group_password.text().strip(),
             "session_check_enabled": self.session_check_enabled.isChecked(),
-            "session_check_initial_delay": self.session_check_initial_delay.value(),
             "post_login_check_delay": self.post_login_delay.value(),
             "session_check_fail_threshold": self.session_check_fail_threshold.value(),
             "session_invalid_notify_group": self.session_invalid_notify_group.isChecked(),
