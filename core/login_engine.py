@@ -72,19 +72,32 @@ class LoginEngine:
         return self._server_url + endpoint
 
     async def _post(self, endpoint: str, json_data: dict, timeout: int = 30) -> dict:
+        # A transport/server-side failure (can't reach the license server, timeout,
+        # 5xx, unparsable body) tells us NOTHING about the Telegram session, so it
+        # is flagged inconclusive — callers like check_session must NOT treat it as
+        # a confirmed "session invalid".
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
                 resp = await client.post(self._url(endpoint), json=json_data)
-                data = resp.json()
+                try:
+                    data = resp.json()
+                except Exception:
+                    return {"success": False, "inconclusive": True,
+                            "message": f"服务器返回格式异常 (HTTP {resp.status_code})"}
                 if not isinstance(data, dict):
-                    return {"success": False, "message": f"服务器返回格式异常"}
+                    return {"success": False, "inconclusive": True,
+                            "message": f"服务器返回格式异常"}
+                if resp.status_code >= 500 and not data.get("success"):
+                    data.setdefault("inconclusive", True)
                 if "success" not in data:
                     data["success"] = False
+                    data.setdefault("inconclusive", True)
                     data.setdefault("message", f"服务器响应缺少 success 字段")
                 return data
         except Exception as e:
             logger.error(f"Remote call failed ({endpoint}): {e}")
-            return {"success": False, "message": f"网络请求失败: {e}"}
+            return {"success": False, "inconclusive": True,
+                    "message": f"网络请求失败: {e}"}
 
     async def send_code(self, phone: str) -> dict:
         if not self._server_url:
