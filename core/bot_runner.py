@@ -65,6 +65,17 @@ class BotRunner:
     def bot_labels(self) -> list[str]:
         return [inst.label for inst in self._instances]
 
+    def running_bots(self) -> list[tuple]:
+        """Return [(label, token), ...] for all running bots (order = start order)."""
+        return [(inst.label, inst.token) for inst in self._instances]
+
+    def get_bot_by_token(self, token: str) -> Bot | None:
+        """Return the running Bot for a given token, or None if not found."""
+        for inst in self._instances:
+            if inst.token == token:
+                return inst.bot
+        return None
+
     @staticmethod
     def get_chat_store():
         return get_chat_store()
