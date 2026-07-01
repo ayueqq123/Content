@@ -6,7 +6,7 @@ from datetime import datetime
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QListWidget, QListWidgetItem, QTextEdit, QLineEdit,
-    QPushButton, QLabel,
+    QPushButton, QLabel, QComboBox,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 
@@ -14,7 +14,7 @@ from PyQt6.QtCore import Qt, pyqtSignal
 class ChatPanel(QWidget):
     """Left: user list, Right: message history + reply input."""
 
-    send_requested = pyqtSignal(int, str)  # (uid, text)
+    send_requested = pyqtSignal(int, str, str)  # (uid, text, bot_token)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -47,6 +47,13 @@ class ChatPanel(QWidget):
         self.chat_view.setObjectName("logPanel")
         right_layout.addWidget(self.chat_view)
 
+        # Bot selector row (which bot replies) — matters when multiple bots run
+        bot_row = QHBoxLayout()
+        bot_row.addWidget(QLabel("回复Bot:"))
+        self.bot_combo = QComboBox()
+        bot_row.addWidget(self.bot_combo, 1)
+        right_layout.addLayout(bot_row)
+
         # Reply input
         reply_row = QHBoxLayout()
         self.reply_input = QLineEdit()
@@ -70,9 +77,35 @@ class ChatPanel(QWidget):
         self._current_uid: int | None = None
         # uid -> QListWidgetItem
         self._uid_items: dict[int, QListWidgetItem] = {}
+        # last chat store reference (used to preselect the conversation's bot)
+        self._store: dict = {}
+
+    def set_bots(self, bots: list):
+        """Populate the reply-bot selector. ``bots`` is [(label, token), ...]."""
+        prev = self.bot_combo.currentData()
+        self.bot_combo.blockSignals(True)
+        self.bot_combo.clear()
+        for label, token in bots:
+            self.bot_combo.addItem(label, token)
+        # restore previous selection if still present
+        if prev is not None:
+            idx = self.bot_combo.findData(prev)
+            if idx >= 0:
+                self.bot_combo.setCurrentIndex(idx)
+        self.bot_combo.blockSignals(False)
+
+    def _select_bot_for_uid(self, uid: int):
+        """Preselect the bot this conversation actually came in on."""
+        data = self._store.get(uid) or {}
+        token = data.get("bot_token")
+        if token:
+            idx = self.bot_combo.findData(token)
+            if idx >= 0:
+                self.bot_combo.setCurrentIndex(idx)
 
     def refresh_store(self, chat_store: dict):
         """Update user list from the chat store."""
+        self._store = chat_store
         for uid, data in chat_store.items():
             if uid not in self._uid_items:
                 name = data.get("name", str(uid))
@@ -99,6 +132,7 @@ class ChatPanel(QWidget):
         uid = current.data(Qt.ItemDataRole.UserRole)
         self._current_uid = uid
         self.chat_label.setText(f"与 {current.text()} 的对话")
+        self._select_bot_for_uid(uid)
         # Need caller to trigger render with store
         self._request_render()
 
@@ -109,6 +143,7 @@ class ChatPanel(QWidget):
 
     def render_current(self, chat_store: dict):
         """Render messages for the currently selected user."""
+        self._store = chat_store
         self._render_messages(chat_store)
 
     def _render_messages(self, chat_store: dict):
@@ -153,4 +188,5 @@ class ChatPanel(QWidget):
         if not text:
             return
         self.reply_input.clear()
-        self.send_requested.emit(self._current_uid, text)
+        token = self.bot_combo.currentData() or ""
+        self.send_requested.emit(self._current_uid, text, token)

