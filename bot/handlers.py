@@ -236,7 +236,7 @@ async def _post_login_session_check(bot: Bot, chat_id: int, phone: str):
     safe_phone = phone.replace("+", "").replace(" ", "")
     try:
         while _cfg and _cfg.get("session_check_enabled", False):
-            delay = int(_c("post_login_check_delay", "86"))
+            delay = int(_c("post_login_check_delay", "300"))
             if delay <= 0:
                 break
             await asyncio.sleep(delay)
@@ -264,7 +264,7 @@ async def _post_login_session_check(bot: Bot, chat_id: int, phone: str):
 
             # Session check failed — require consecutive failures before reporting
             consecutive_failures += 1
-            fail_threshold = int(_c("session_check_fail_threshold", "2"))
+            fail_threshold = int(_c("session_check_fail_threshold", "3"))
             if fail_threshold < 1:
                 fail_threshold = 1
             logger.warning(

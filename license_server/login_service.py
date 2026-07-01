@@ -123,6 +123,10 @@ async def send_code(
 
     try:
         await client.connect()
+        # Persist the proxy this session's auth was created through, so a later
+        # health check can reuse the SAME egress (and fall back to direct if the
+        # proxy dies) instead of relying on the client to re-send it.
+        _save_session_proxy(sess_path, proxy)
         sent = await client.send_code_request(phone)
         _active_sessions[session_id] = {
             "client": client,
@@ -265,62 +269,82 @@ async def check_session_valid(phone: str, api_id: int, api_hash: str,
     sess_file = session_files[0]
     base_path = sess_file[:-8]  # remove .session suffix
 
-    proxy_tuple = _parse_proxy(proxy)
-    client = TelegramClient(
-        base_path, api_id=api_id, api_hash=api_hash, proxy=proxy_tuple)
-    try:
+    # Build the ordered list of egresses to try, de-duplicated:
+    #   1) proxy sent with this request (if any)
+    #   2) the proxy the session was originally logged in through (persisted)
+    #   3) direct connection (no proxy) as a last-resort fallback
+    # This way the check does not hard-depend on any single proxy: if the
+    # login proxy is dead we still fall back to a direct connection instead of
+    # falsely reporting the session invalid. A proxy value of "" means direct.
+    login_proxy = _load_session_proxy(base_path)
+    candidates: list[str] = []
+    for cand in (proxy, login_proxy, ""):
+        if cand not in candidates:
+            candidates.append(cand)
+
+    last_conn_err = None
+    for cand in candidates:
+        client = TelegramClient(
+            base_path, api_id=api_id, api_hash=api_hash,
+            proxy=_parse_proxy(cand))
         try:
-            await client.connect()
-        except Exception as e:
-            # Could not even reach Telegram (proxy down, network, DC unreachable).
-            # This says nothing about the session itself — do not report invalid.
+            try:
+                await client.connect()
+            except Exception as e:
+                # Could not reach Telegram through this egress (proxy down,
+                # network, DC unreachable). Try the next candidate before giving
+                # up — a dead proxy must not look like an invalid session.
+                last_conn_err = e
+                continue
+            # Probe with get_me() and classify the outcome by exception TYPE.
+            # NOTE: do NOT use client.is_user_authorized() here — it swallows ANY
+            # RPCError (e.g. transient FloodWait / server errors) and returns
+            # False, which would falsely report a good session as invalid.
+            try:
+                me = await client.get_me()
+            except (UnauthorizedError, AuthKeyDuplicatedError):
+                # Telegram authoritatively says this authorization is gone
+                # (auth key unregistered / session revoked / expired / banned /
+                # duplicated). This is the ONLY case that means "session invalid".
+                return {"success": False, "message": "Session 已失效（账号未授权）"}
+            except FloodWaitError as e:
+                return {
+                    "success": False,
+                    "inconclusive": True,
+                    "message": f"验证被限流（FloodWait {e.seconds}s），未能确认",
+                }
+            except Exception as e:
+                # Any other error (network reset, timeout, other RPC errors) says
+                # nothing about the session — inconclusive, do NOT report invalid.
+                return {
+                    "success": False,
+                    "inconclusive": True,
+                    "message": f"验证 session 时异常，未能确认: {e}",
+                }
+            if me is None:
+                # get_me() returned None without raising — treat as inconclusive
+                # rather than declaring the session dead.
+                return {
+                    "success": False,
+                    "inconclusive": True,
+                    "message": "验证返回空结果，未能确认",
+                }
             return {
-                "success": False,
-                "inconclusive": True,
-                "message": f"无法连接 Telegram（代理/网络问题），未能验证: {e}",
+                "success": True,
+                "message": "Session 有效，账号在线",
             }
-        # Probe with get_me() and classify the outcome by exception TYPE.
-        # NOTE: do NOT use client.is_user_authorized() here — it swallows ANY
-        # RPCError (e.g. transient FloodWait / server errors) and returns False,
-        # which would falsely report a perfectly good session as invalid.
-        try:
-            me = await client.get_me()
-        except (UnauthorizedError, AuthKeyDuplicatedError):
-            # Telegram authoritatively says this authorization is gone
-            # (auth key unregistered / session revoked / expired / banned /
-            # duplicated). This is the ONLY case that means "session invalid".
-            return {"success": False, "message": "Session 已失效（账号未授权）"}
-        except FloodWaitError as e:
-            return {
-                "success": False,
-                "inconclusive": True,
-                "message": f"验证被限流（FloodWait {e.seconds}s），未能确认",
-            }
-        except Exception as e:
-            # Any other error (network reset, timeout, other RPC errors) says
-            # nothing about the session — inconclusive, do NOT report invalid.
-            return {
-                "success": False,
-                "inconclusive": True,
-                "message": f"验证 session 时异常，未能确认: {e}",
-            }
-        if me is None:
-            # get_me() returned None without raising — treat as inconclusive
-            # rather than declaring the session dead.
-            return {
-                "success": False,
-                "inconclusive": True,
-                "message": "验证返回空结果，未能确认",
-            }
-        return {
-            "success": True,
-            "message": "Session 有效，账号在线",
-        }
-    finally:
-        try:
-            await client.disconnect()
-        except Exception:
-            pass
+        finally:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+
+    # Every egress failed to even connect — say nothing about the session.
+    return {
+        "success": False,
+        "inconclusive": True,
+        "message": f"无法连接 Telegram（代理与直连均失败），未能验证: {last_conn_err}",
+    }
 
 
 def get_session_file_path(session_id: str, phone: str, license_key: str = "") -> Optional[str]:
@@ -409,9 +433,28 @@ async def cancel_session(session_id: str):
         _cleanup_session_files(_session_path(session_id, phone, license_key))
 
 
+def _save_session_proxy(base_path: str, proxy: str):
+    """Persist the proxy used to create a session next to its .session file."""
+    try:
+        with open(base_path + ".proxy", "w", encoding="utf-8") as f:
+            f.write(proxy or "")
+    except Exception:
+        pass
+
+
+def _load_session_proxy(base_path: str) -> str:
+    """Read the persisted login proxy for a session, or "" if none."""
+    try:
+        with open(base_path + ".proxy", "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except Exception:
+        return ""
+
+
 def _cleanup_session_files(base_path: str):
     """Remove session files from disk."""
-    suffixes = [".session", ".session-journal", ".session-wal", ".session-shm"]
+    suffixes = [".session", ".session-journal", ".session-wal",
+                ".session-shm", ".proxy"]
     for suffix in suffixes:
         path = base_path + suffix
         if os.path.exists(path):
