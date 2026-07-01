@@ -365,9 +365,18 @@ class MainWindow(QMainWindow):
 
     async def _do_send_chat(self, bot, uid: int, text: str):
         try:
-            await bot.send_message(chat_id=uid, text=text, parse_mode="HTML")
+            try:
+                await bot.send_message(chat_id=uid, text=text, parse_mode="HTML")
+            except Exception as html_err:
+                # Manual replies are raw operator text; if it contains "<"/"&"
+                # or otherwise breaks HTML parsing, Telegram rejects it with
+                # "can't parse entities". Retry once as plain text so the
+                # message still goes out instead of silently failing.
+                if "parse" in str(html_err).lower() or "entit" in str(html_err).lower():
+                    await bot.send_message(chat_id=uid, text=text, parse_mode=None)
+                else:
+                    raise
             self._append_log(f"✉ 手动回复 [{uid}]: {text}")
-            import time
             from bot.handlers import _record_msg, get_chat_store
             _record_msg(uid, "", "bot", text)
             store = get_chat_store()
