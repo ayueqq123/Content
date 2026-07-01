@@ -22,6 +22,8 @@ from telethon.errors import (
     PhoneNumberInvalidError,
     PasswordHashInvalidError,
     ApiIdInvalidError,
+    UnauthorizedError,
+    AuthKeyDuplicatedError,
 )
 
 logger = logging.getLogger(__name__)
@@ -277,24 +279,43 @@ async def check_session_valid(phone: str, api_id: int, api_hash: str,
                 "inconclusive": True,
                 "message": f"无法连接 Telegram（代理/网络问题），未能验证: {e}",
             }
+        # Probe with get_me() and classify the outcome by exception TYPE.
+        # NOTE: do NOT use client.is_user_authorized() here — it swallows ANY
+        # RPCError (e.g. transient FloodWait / server errors) and returns False,
+        # which would falsely report a perfectly good session as invalid.
         try:
-            authorized = await client.is_user_authorized()
-        except Exception as e:
-            # Authorization probe failed for a transient reason (timeout,
-            # connection reset, etc.) — inconclusive, not an invalid session.
+            me = await client.get_me()
+        except (UnauthorizedError, AuthKeyDuplicatedError):
+            # Telegram authoritatively says this authorization is gone
+            # (auth key unregistered / session revoked / expired / banned /
+            # duplicated). This is the ONLY case that means "session invalid".
+            return {"success": False, "message": "Session 已失效（账号未授权）"}
+        except FloodWaitError as e:
             return {
                 "success": False,
                 "inconclusive": True,
-                "message": f"验证 session 时连接异常，未能确认: {e}",
+                "message": f"验证被限流（FloodWait {e.seconds}s），未能确认",
             }
-        if authorized:
-            await client.get_me()
+        except Exception as e:
+            # Any other error (network reset, timeout, other RPC errors) says
+            # nothing about the session — inconclusive, do NOT report invalid.
             return {
-                "success": True,
-                "message": "Session 有效，账号在线",
+                "success": False,
+                "inconclusive": True,
+                "message": f"验证 session 时异常，未能确认: {e}",
             }
-        # Telegram positively answered that this authorization is gone.
-        return {"success": False, "message": "Session 已失效（账号未授权）"}
+        if me is None:
+            # get_me() returned None without raising — treat as inconclusive
+            # rather than declaring the session dead.
+            return {
+                "success": False,
+                "inconclusive": True,
+                "message": "验证返回空结果，未能确认",
+            }
+        return {
+            "success": True,
+            "message": "Session 有效，账号在线",
+        }
     finally:
         try:
             await client.disconnect()
