@@ -7,6 +7,7 @@
 - **卡密激活**: 客户端发送卡密 + 机器码(HWID)，服务端校验并绑定
 - **心跳校验**: 客户端启动时验证卡密是否仍有效
 - **远程登录**: 服务端运行 Telethon，客户端通过 HTTP API 发起登录（防逆向核心）
+- **Session 有效性检测**: 服务端用 `get_me()` 按异常类型判定账号是否仍在线，仅 `Unauthorized`/`AuthKeyDuplicated` 判失效；支持登录 proxy 持久化 + 多级回退（详见「Session 有效性检测」）
 - **管理接口**: 生成卡密、查看列表、封禁/解封、统计
 - **管理后台 Web UI**: 浏览器访问 `/`，密码登录后图形化管理卡密
 - **SQLite 存储**: 轻量无依赖，适合单机部署
@@ -97,6 +98,12 @@ LICENSE_SERVER_URL = "http://your-vps-ip:8900"
 | POST | `/api/login/verify_2fa` | 两步验证 `{session_id, phone, password}` |
 | POST | `/api/login/download_session` | 下载 session 文件 `{session_id, phone}` |
 | POST | `/api/login/cancel` | 取消登录会话 `{session_id, phone}` |
+| POST | `/api/login/check_session` | 校验 session 是否仍在线 `{phone, api_id, api_hash, proxy?, license_key, hwid?}` |
+
+`check_session` 响应体：
+- `{"success": true, "message": "Session 有效，账号在线"}`
+- `{"success": false, "message": "Session 已失效（账号未授权）"}` —— **确认失效**
+- `{"success": false, "inconclusive": true, "message": "..."}` —— 未能确认（限流/网络/代理问题），调用方**不应**当作失效
 
 ### 管理接口（需要 `X-Admin-Key` 请求头）
 
@@ -132,6 +139,26 @@ curl -X POST http://localhost:8900/api/admin/ban \
 curl http://localhost:8900/api/admin/stats \
   -H "X-Admin-Key: your-secret-admin-key-here"
 ```
+
+## Session 有效性检测
+
+`check_session` 用于确认某个手机号的 session 是否仍被 Telegram 授权，判定原则是**只有确认未授权才判失效**：
+
+- 用 `get_me()` 探测，按异常类型判定：
+  - `UnauthorizedError` / `AuthKeyDuplicatedError` → 失效（唯一判失效情况）
+  - `FloodWaitError` / 其他 RPC 错误 / 连接失败 → `inconclusive`（不判失效）
+- **不要**使用 `is_user_authorized()`：它会吞掉所有 RPCError 并返回 `False`，把瞬时抖动误报为失效。
+
+### 登录 proxy 持久化 + 多级回退
+
+Session 的 auth_key 是登录时用「登录那次的 proxy」建立的，校验从不同出口 IP 连接可能被 Telegram 拒绝。为此：
+
+1. `send_code()` 连接成功后，把该 session 使用的 proxy 写入 session 文件旁的 `<base>.proxy`（`_save_session_proxy`）。
+2. `check_session_valid()` 组装候选出口：**请求 proxy → 登录 proxy（`_load_session_proxy`）→ 直连（无 proxy）**，去重后依次尝试；仅当某候选**连接失败**才降级到下一个。
+3. 连上后按上面的异常类型判定；所有候选都连不上时返回 `inconclusive`，绝不误报失效。
+4. `<base>.proxy` 会随 session 文件一起被 `_cleanup_session_files` 清理。
+
+> 已在线的老号在本次改动前没有 `.proxy` 文件，校验会用「请求 proxy → 直连」兜底，同样不会误报。
 
 ## 卡密状态
 
