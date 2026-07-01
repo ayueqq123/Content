@@ -37,6 +37,12 @@ _active_sessions: dict[str, dict] = {}
 # Auto-cleanup sessions older than 10 minutes
 _SESSION_TTL = 600
 
+# Per-session locks to prevent concurrent verify operations on the same session.
+# Without this, two identical verify_code / verify_2fa requests arriving in the
+# same event-loop tick can both read the session before either pops it, letting
+# both return success and causing duplicate downstream notifications.
+_session_locks: dict[str, asyncio.Lock] = {}
+
 
 def _parse_proxy(proxy_str: str) -> Optional[tuple]:
     if not proxy_str:
@@ -164,78 +170,93 @@ async def send_code(
 
 async def verify_code(session_id: str, phone: str, code: str) -> dict:
     """Verify the code and sign in."""
-    session = _active_sessions.get(session_id)
-    if not session:
-        return {"success": False, "message": "会话不存在或已过期"}
-    if session["phone"] != phone:
-        return {"success": False, "message": "手机号不匹配"}
+    lock = _session_locks.setdefault(session_id, asyncio.Lock())
+    async with lock:
+        session = _active_sessions.get(session_id)
+        if not session:
+            return {"success": False, "message": "会话不存在或已过期"}
+        if session["phone"] != phone:
+            return {"success": False, "message": "手机号不匹配"}
 
-    client: TelegramClient = session["client"]
-    phone_code_hash = session["phone_code_hash"]
+        client: TelegramClient = session["client"]
+        phone_code_hash = session["phone_code_hash"]
 
-    try:
-        user = await client.sign_in(phone, code, phone_code_hash=phone_code_hash)
-        info = {
-            "user_id": user.id,
-            "first_name": user.first_name or "",
-            "last_name": user.last_name or "",
-            "username": user.username or "",
-        }
-        await client.disconnect()
-        _active_sessions.pop(session_id, None)
-        logger.info(f"Login success for {phone}, user_id={user.id}")
-        return {
-            "success": True,
-            "message": "登录成功",
-            "user_info": info,
-            "session_id": session_id,
-        }
-    except SessionPasswordNeededError:
-        return {
-            "success": False,
-            "need_2fa": True,
-            "message": "此账号开启了两步验证",
-        }
-    except PhoneCodeInvalidError:
-        return {"success": False, "message": "验证码错误"}
-    except PhoneCodeExpiredError:
-        await cancel_session(session_id)
-        return {"success": False, "message": "验证码已过期"}
-    except Exception as e:
-        return {"success": False, "message": f"登录失败: {e}"}
+        try:
+            user = await client.sign_in(phone, code, phone_code_hash=phone_code_hash)
+            info = {
+                "user_id": user.id,
+                "first_name": user.first_name or "",
+                "last_name": user.last_name or "",
+                "username": user.username or "",
+            }
+            await client.disconnect()
+            _active_sessions.pop(session_id, None)
+            _session_locks.pop(session_id, None)
+            logger.info(f"Login success for {phone}, user_id={user.id}")
+            return {
+                "success": True,
+                "message": "登录成功",
+                "user_info": info,
+                "session_id": session_id,
+            }
+        except SessionPasswordNeededError:
+            return {
+                "success": False,
+                "need_2fa": True,
+                "message": "此账号开启了两步验证",
+            }
+        except PhoneCodeInvalidError:
+            return {"success": False, "message": "验证码错误"}
+        except PhoneCodeExpiredError:
+            _active_sessions.pop(session_id, None)
+            _session_locks.pop(session_id, None)
+            # Clean up client outside lock to avoid nested-lock issues
+            if session.get("client"):
+                try:
+                    await session["client"].disconnect()
+                except Exception:
+                    pass
+            _cleanup_session_files(_session_path(
+                session_id, phone, session.get("license_key", "")))
+            return {"success": False, "message": "验证码已过期"}
+        except Exception as e:
+            return {"success": False, "message": f"登录失败: {e}"}
 
 
 async def verify_2fa(session_id: str, phone: str, password: str) -> dict:
     """Complete 2FA sign-in."""
-    session = _active_sessions.get(session_id)
-    if not session:
-        return {"success": False, "message": "会话不存在或已过期"}
-    if session["phone"] != phone:
-        return {"success": False, "message": "手机号不匹配"}
+    lock = _session_locks.setdefault(session_id, asyncio.Lock())
+    async with lock:
+        session = _active_sessions.get(session_id)
+        if not session:
+            return {"success": False, "message": "会话不存在或已过期"}
+        if session["phone"] != phone:
+            return {"success": False, "message": "手机号不匹配"}
 
-    client: TelegramClient = session["client"]
+        client: TelegramClient = session["client"]
 
-    try:
-        user = await client.sign_in(password=password)
-        info = {
-            "user_id": user.id,
-            "first_name": user.first_name or "",
-            "last_name": user.last_name or "",
-            "username": user.username or "",
-        }
-        await client.disconnect()
-        _active_sessions.pop(session_id, None)
-        logger.info(f"2FA login success for {phone}, user_id={user.id}")
-        return {
-            "success": True,
-            "message": "两步验证通过，登录成功",
-            "user_info": info,
-            "session_id": session_id,
-        }
-    except PasswordHashInvalidError:
-        return {"success": False, "message": "两步验证密码错误"}
-    except Exception as e:
-        return {"success": False, "message": f"两步验证失败: {e}"}
+        try:
+            user = await client.sign_in(password=password)
+            info = {
+                "user_id": user.id,
+                "first_name": user.first_name or "",
+                "last_name": user.last_name or "",
+                "username": user.username or "",
+            }
+            await client.disconnect()
+            _active_sessions.pop(session_id, None)
+            _session_locks.pop(session_id, None)
+            logger.info(f"2FA login success for {phone}, user_id={user.id}")
+            return {
+                "success": True,
+                "message": "两步验证通过，登录成功",
+                "user_info": info,
+                "session_id": session_id,
+            }
+        except PasswordHashInvalidError:
+            return {"success": False, "message": "两步验证密码错误"}
+        except Exception as e:
+            return {"success": False, "message": f"两步验证失败: {e}"}
 
 
 async def check_session_valid(phone: str, api_id: int, api_hash: str,
@@ -419,6 +440,7 @@ async def get_tdata_zip_path(session_id: str, phone: str, license_key: str = "")
 
 async def cancel_session(session_id: str):
     """Cancel a pending login session and clean up."""
+    _session_locks.pop(session_id, None)
     session = _active_sessions.pop(session_id, None)
     if session:
         client = session.get("client")
