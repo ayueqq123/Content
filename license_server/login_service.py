@@ -343,8 +343,24 @@ async def check_session_valid(phone: str, api_id: int, api_hash: str,
                     "message": f"验证 session 时异常，未能确认: {e}",
                 }
             if me is None:
-                # get_me() returned None without raising — treat as inconclusive
-                # rather than declaring the session dead.
+                # Telethon's get_me() catches UnauthorizedError internally and
+                # returns None instead of raising, so the except-branch above is
+                # never hit for a revoked session — a None result after a
+                # SUCCESSFUL connect() means the authorization is gone. Confirm
+                # with is_user_authorized() (the connection already succeeded, so
+                # this reflects the real auth state, not a transient connect
+                # failure) before declaring the session dead.
+                try:
+                    authorized = await client.is_user_authorized()
+                except Exception:
+                    authorized = None
+                if authorized is False:
+                    return {
+                        "success": False,
+                        "message": "Session 已失效（账号未授权）",
+                    }
+                # Genuinely ambiguous (is_user_authorized itself failed) — stay
+                # inconclusive rather than risk a false "invalid" report.
                 return {
                     "success": False,
                     "inconclusive": True,
