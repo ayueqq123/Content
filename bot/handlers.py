@@ -488,7 +488,7 @@ async def cmd_start(message: Message, bot: Bot):
                 chat_id=message.chat.id, text="\u200b",
                 reply_markup=kb)
 
-    _record_msg(uid, _user_name(message), "bot", text)
+    _record_msg(uid, _user_name(message), "bot", text, bot)
     logger.info(f"[{uid}] /start")
 
     # Record start time for /start remind feature
@@ -680,4 +680,4 @@ async def handle_default(message: Message, bot: Bot):
     text = _c("default_reply", "")
     if text:
         await message.answer(text, parse_mode="HTML")
-        _record_msg(uid, _user_name(message), "bot", text)
+        _record_msg(uid, _user_name(message), "bot", text, bot)
