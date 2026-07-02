@@ -357,20 +357,38 @@ class MainWindow(QMainWindow):
             self.chat_panel.on_new_message(uid, store)
 
     def _on_chat_send(self, uid: int, text: str, bot_token: str = ""):
-        """Send a manual reply to a user via the selected bot."""
-        # Route through the chosen bot; fall back to the bot the conversation
-        # came in on, then to the first running bot.
-        bot = bot_runner.get_bot_by_token(bot_token) if bot_token else None
-        if bot is None:
-            store = bot_runner.get_chat_store()
-            conv_token = (store.get(uid) or {}).get("bot_token")
-            if conv_token:
-                bot = bot_runner.get_bot_by_token(conv_token)
+        """Send a manual reply to a user via the correct bot.
+
+        Telegram only allows a bot to send messages to users who have
+        previously opened a conversation with THAT specific bot. Using a
+        different bot token results in "chat not found". We therefore always
+        prefer the bot the conversation actually came in on, and only fall
+        back to the combo selection / first bot when that info is missing.
+        """
+        store = bot_runner.get_chat_store()
+        conv_token = (store.get(uid) or {}).get("bot_token")
+
+        # Always use the conversation's bot first — it's the only one with
+        # an open chat context for this user.
+        bot = bot_runner.get_bot_by_token(conv_token) if conv_token else None
+
+        if bot is None and bot_token:
+            # No conversation-bot recorded; try the operator's combo selection.
+            bot = bot_runner.get_bot_by_token(bot_token)
         if bot is None:
             bot = bot_runner.bot
+
         if not bot:
             self._append_log("❌ Bot 未运行，无法发送消息")
             return
+
+        # Warn if the combo selection differs from the conversation bot.
+        if bot_token and conv_token and bot_token != conv_token:
+            self._append_log(
+                f"⚠️ 已切换为与该用户对话的 Bot（{conv_token[:8]}…），"
+                f"所选 Bot 无法向未主动发消息的用户发送私信"
+            )
+
         loop = asyncio.get_event_loop()
         loop.create_task(self._do_send_chat(bot, uid, text))
 
