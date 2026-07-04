@@ -266,7 +266,13 @@ async def _post_login_session_check(bot: Bot, chat_id: int, phone: str):
                 delay = int(_c("post_login_check_delay", "300"))
                 if delay <= 0:
                     delay = 1
-                await asyncio.sleep(delay)
+                # Add random jitter (up to ±20%) so that many accounts logged
+                # in together don't all fire their checks in the same instant —
+                # a synchronized burst saturates the single-process license
+                # server and makes requests time out (falsely looking like the
+                # session went away).
+                jitter = delay * 0.2
+                await asyncio.sleep(delay + random.uniform(-jitter, jitter))
 
             result = await login_engine.check_session(phone)
             logger.info(f"Session check for {phone}: {result.get('success')}")
