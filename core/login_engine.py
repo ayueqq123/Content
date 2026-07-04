@@ -84,7 +84,13 @@ class LoginEngine:
                 return data
         except Exception as e:
             logger.error(f"Remote call failed ({endpoint}): {e}")
-            return {"success": False, "message": f"网络请求失败: {e}"}
+            # A transport-level failure (timeout / connection refused / DNS)
+            # means we never got an answer from the server, so it says NOTHING
+            # about the account's session state. Flag it as inconclusive so the
+            # periodic session check does not miscount it as evidence that the
+            # session is invalid (which would falsely report "session 已失效").
+            return {"success": False, "inconclusive": True,
+                    "message": f"网络请求失败: {e}"}
 
     async def send_code(self, phone: str) -> dict:
         if not self._server_url:
