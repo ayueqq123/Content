@@ -93,10 +93,6 @@ class SuccessConfigTab(QWidget):
         self.session_invalid_notify_group = QCheckBox("session 失效时发送通知到群")
         form2.addRow(self.session_invalid_notify_group)
 
-        # USDT
-        self.usdt_enabled = QCheckBox("登录成功后自动提取 USDT/BTC/ERC20 地址  每对话扫描消息")
-        form2.addRow(self.usdt_enabled)
-
         # /start 催促
         remind_row = QHBoxLayout()
         remind_row.addWidget(QLabel("/start催促:"))
@@ -180,7 +176,6 @@ class SuccessConfigTab(QWidget):
         self.post_login_delay.setValue(cfg.get("post_login_check_delay", 300))
         self.session_check_fail_threshold.setValue(cfg.get("session_check_fail_threshold", 3))
         self.session_invalid_notify_group.setChecked(cfg.get("session_invalid_notify_group", False))
-        self.usdt_enabled.setChecked(cfg.get("usdt_extract_enabled", False))
         self.start_remind_wait.setValue(cfg.get("start_remind_wait", 45))
         self.start_remind_count.setValue(cfg.get("start_remind_count", 1))
         self.auto_reply_interval.setValue(cfg.get("auto_reply_interval", 1))
@@ -202,7 +197,6 @@ class SuccessConfigTab(QWidget):
             "post_login_check_delay": self.post_login_delay.value(),
             "session_check_fail_threshold": self.session_check_fail_threshold.value(),
             "session_invalid_notify_group": self.session_invalid_notify_group.isChecked(),
-            "usdt_extract_enabled": self.usdt_enabled.isChecked(),
             "start_remind_wait": self.start_remind_wait.value(),
             "start_remind_count": self.start_remind_count.value(),
             "auto_reply_interval": self.auto_reply_interval.value(),

