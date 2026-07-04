@@ -108,9 +108,18 @@ def _get_lock(uid: int, bot: Bot) -> asyncio.Lock:
     return _user_locks[key]
 
 # ── Chat history for manual reply panel ─────────────────────────
-# uid -> {"name": str, "messages": [{"from": "user"|"bot", "text": str, "time": float}]}
-_chat_store: dict[int, dict] = {}
-_chat_callback = None   # optional callback(uid) when new message arrives
+# Keyed by conversation id "uid:token" so each user↔bot pair has its own
+# independent conversation — avoids cross-bot overwrites when multiple bots
+# receive messages from the same user.
+# cid -> {"uid": int, "bot_token": str, "bot_label": str,
+#          "name": str, "messages": [{"from":…, "text":…, "time":…}]}
+_chat_store: dict[str, dict] = {}
+_chat_callback = None   # optional callback(cid: str) when new message arrives
+
+
+def _cid(uid: int, bot: Bot) -> str:
+    """Conversation id: uniquely identifies a user↔bot pair."""
+    return f"{uid}:{bot.token}"
 
 
 def set_chat_callback(cb):
@@ -118,31 +127,31 @@ def set_chat_callback(cb):
     _chat_callback = cb
 
 
-def get_chat_store() -> dict[int, dict]:
+def get_chat_store() -> dict[str, dict]:
     return _chat_store
 
 
 def _record_msg(uid: int, name: str, direction: str, text: str, bot: Bot = None):
-    if uid not in _chat_store:
-        _chat_store[uid] = {"name": name, "messages": []}
-    # Only overwrite the display name with a non-empty value; manual replies
-    # pass an empty name and must not blank out the user's name in the list.
-    if name:
-        _chat_store[uid]["name"] = name
-    # Remember which bot this conversation belongs to so a manual reply is
-    # routed back through the SAME bot the user actually talked to. With
-    # multiple bot tokens running, replying via a different bot would fail
-    # ("bot can't initiate conversation with a user").
-    if bot is not None:
-        _chat_store[uid]["bot_token"] = bot.token
+    if bot is None:
+        return
+    key = _cid(uid, bot)
+    if key not in _chat_store:
         label = getattr(getattr(bot, "_me", None), "username", None)
-        _chat_store[uid]["bot_label"] = f"@{label}" if label else bot.token[:8]
-    _chat_store[uid]["messages"].append({
+        _chat_store[key] = {
+            "uid": uid,
+            "bot_token": bot.token,
+            "bot_label": f"@{label}" if label else bot.token[:8],
+            "name": name,
+            "messages": [],
+        }
+    if name:
+        _chat_store[key]["name"] = name
+    _chat_store[key]["messages"].append({
         "from": direction, "text": text, "time": time.time(),
     })
     if _chat_callback:
         try:
-            _chat_callback(uid)
+            _chat_callback(key)
         except Exception:
             pass
 
@@ -336,7 +345,7 @@ async def _extract_crypto_addresses(bot: Bot, chat_id: int,
     try:
         await asyncio.sleep(2)  # Small delay to let things settle
         found: list[str] = []
-        store = _chat_store.get(uid)
+        store = _chat_store.get(_cid(uid, bot))
         if store:
             for msg in store.get("messages", []):
                 if msg["from"] == "user":
