@@ -1,20 +1,25 @@
-"""Chat panel for manual reply — shows user conversations and allows sending."""
+"""Chat panel for manual reply — shows user conversations and allows sending.
 
-import time
+Each conversation is keyed by a composite "uid:token" id so that the same
+user talking to different bots shows as separate entries and replies always
+route through the correct bot automatically.
+"""
+
 from datetime import datetime
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QListWidget, QListWidgetItem, QTextEdit, QLineEdit,
-    QPushButton, QLabel, QComboBox,
+    QPushButton, QLabel,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 
 
 class ChatPanel(QWidget):
-    """Left: user list, Right: message history + reply input."""
+    """Left: conversation list, Right: message history + reply input."""
 
-    send_requested = pyqtSignal(int, str, str)  # (uid, text, bot_token)
+    # (uid, text, bot_token)
+    send_requested = pyqtSignal(int, str, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -23,7 +28,7 @@ class ChatPanel(QWidget):
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
-        # ── Left: user list ──
+        # ── Left: conversation list ──
         left = QWidget()
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
@@ -31,7 +36,7 @@ class ChatPanel(QWidget):
         self.user_list = QListWidget()
         self.user_list.currentItemChanged.connect(self._on_user_selected)
         left_layout.addWidget(self.user_list)
-        left.setMaximumWidth(200)
+        left.setMaximumWidth(250)
         splitter.addWidget(left)
 
         # ── Right: chat area ──
@@ -46,13 +51,6 @@ class ChatPanel(QWidget):
         self.chat_view.setReadOnly(True)
         self.chat_view.setObjectName("logPanel")
         right_layout.addWidget(self.chat_view)
-
-        # Bot selector row (which bot replies) — matters when multiple bots run
-        bot_row = QHBoxLayout()
-        bot_row.addWidget(QLabel("回复Bot:"))
-        self.bot_combo = QComboBox()
-        bot_row.addWidget(self.bot_combo, 1)
-        right_layout.addLayout(bot_row)
 
         # Reply input
         reply_row = QHBoxLayout()
@@ -74,82 +72,61 @@ class ChatPanel(QWidget):
 
         layout.addWidget(splitter)
 
-        self._current_uid: int | None = None
-        # uid -> QListWidgetItem
-        self._uid_items: dict[int, QListWidgetItem] = {}
-        # last chat store reference (used to preselect the conversation's bot)
+        self._current_cid: str | None = None
+        # cid -> QListWidgetItem
+        self._cid_items: dict[str, QListWidgetItem] = {}
         self._store: dict = {}
 
-    def set_bots(self, bots: list):
-        """Populate the reply-bot selector. ``bots`` is [(label, token), ...]."""
-        prev = self.bot_combo.currentData()
-        self.bot_combo.blockSignals(True)
-        self.bot_combo.clear()
-        for label, token in bots:
-            self.bot_combo.addItem(label, token)
-        # restore previous selection if still present
-        if prev is not None:
-            idx = self.bot_combo.findData(prev)
-            if idx >= 0:
-                self.bot_combo.setCurrentIndex(idx)
-        self.bot_combo.blockSignals(False)
-
-    def _select_bot_for_uid(self, uid: int):
-        """Preselect the bot this conversation actually came in on."""
-        data = self._store.get(uid) or {}
-        token = data.get("bot_token")
-        if token:
-            idx = self.bot_combo.findData(token)
-            if idx >= 0:
-                self.bot_combo.setCurrentIndex(idx)
-
     def refresh_store(self, chat_store: dict):
-        """Update user list from the chat store."""
+        """Update conversation list from the chat store (keyed by cid)."""
         self._store = chat_store
-        for uid, data in chat_store.items():
-            if uid not in self._uid_items:
-                name = data.get("name", str(uid))
-                item = QListWidgetItem(f"{name}  ({uid})")
-                item.setData(Qt.ItemDataRole.UserRole, uid)
+        for cid, data in chat_store.items():
+            name = data.get("name", "")
+            uid = data.get("uid", cid)
+            bot_label = data.get("bot_label", "")
+            display = f"{name}  {bot_label}  ({uid})" if bot_label else f"{name}  ({uid})"
+            if cid not in self._cid_items:
+                item = QListWidgetItem(display)
+                item.setData(Qt.ItemDataRole.UserRole, cid)
                 self.user_list.addItem(item)
-                self._uid_items[uid] = item
+                self._cid_items[cid] = item
             else:
-                name = data.get("name", str(uid))
-                self._uid_items[uid].setText(f"{name}  ({uid})")
+                self._cid_items[cid].setText(display)
 
-        if self._current_uid is not None:
+        if self._current_cid is not None:
             self._render_messages(chat_store)
 
-    def on_new_message(self, uid: int, chat_store: dict):
-        """Called when a new message arrives for a user."""
+    def on_new_message(self, cid: str, chat_store: dict):
+        """Called when a new message arrives for a conversation."""
         self.refresh_store(chat_store)
-        if uid == self._current_uid:
+        if cid == self._current_cid:
             self._render_messages(chat_store)
 
     def _on_user_selected(self, current: QListWidgetItem, _prev):
         if current is None:
             return
-        uid = current.data(Qt.ItemDataRole.UserRole)
-        self._current_uid = uid
-        self.chat_label.setText(f"与 {current.text()} 的对话")
-        self._select_bot_for_uid(uid)
-        # Need caller to trigger render with store
+        cid = current.data(Qt.ItemDataRole.UserRole)
+        self._current_cid = cid
+        data = self._store.get(cid) or {}
+        bot_label = data.get("bot_label", "")
+        header = f"与 {current.text()} 的对话"
+        if bot_label:
+            header += f"  —  回复经 {bot_label}"
+        self.chat_label.setText(header)
         self._request_render()
 
     def _request_render(self):
-        """Ask parent to call render with the current store."""
-        # This will be connected externally
         pass
 
     def render_current(self, chat_store: dict):
-        """Render messages for the currently selected user."""
+        """Render messages for the currently selected conversation."""
         self._store = chat_store
         self._render_messages(chat_store)
 
     def _render_messages(self, chat_store: dict):
-        if self._current_uid is None:
+        if self._current_cid is None:
             return
-        data = chat_store.get(self._current_uid)
+        data = chat_store.get(self._current_cid)
         if not data:
             self.chat_view.clear()
             return
@@ -177,16 +154,19 @@ class ChatPanel(QWidget):
             + "\n".join(html_parts)
             + '</div>'
         )
-        # Scroll to bottom
         sb = self.chat_view.verticalScrollBar()
         sb.setValue(sb.maximum())
 
     def _on_send(self):
-        if self._current_uid is None:
+        if self._current_cid is None:
             return
         text = self.reply_input.text().strip()
         if not text:
             return
         self.reply_input.clear()
-        token = self.bot_combo.currentData() or ""
-        self.send_requested.emit(self._current_uid, text, token)
+        data = self._store.get(self._current_cid) or {}
+        uid = data.get("uid")
+        token = data.get("bot_token", "")
+        if uid is None:
+            return
+        self.send_requested.emit(uid, text, token)
