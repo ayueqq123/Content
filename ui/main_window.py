@@ -368,50 +368,86 @@ class MainWindow(QMainWindow):
         store = bot_runner.get_chat_store()
         conv_token = (store.get(uid) or {}).get("bot_token")
 
-        # Always use the conversation's bot first — it's the only one with
-        # an open chat context for this user.
-        bot = bot_runner.get_bot_by_token(conv_token) if conv_token else None
+        # Build an ordered list of candidate bots to try. Telegram only lets a
+        # bot DM users who previously messaged THAT bot; sending via any other
+        # bot returns "chat not found". The bot recorded on the conversation is
+        # normally correct, but it can be wrong/missing (e.g. the chat store is
+        # keyed by uid so a later bot overwrites it, or bot_token was never
+        # recorded). So we try the conversation bot first, then the operator's
+        # combo selection, then EVERY other running bot as a fallback.
+        candidates: list = []
+        seen_tokens: set[str] = set()
 
-        if bot is None and bot_token:
-            # No conversation-bot recorded; try the operator's combo selection.
-            bot = bot_runner.get_bot_by_token(bot_token)
-        if bot is None:
-            bot = bot_runner.bot
+        def _add(b):
+            if b is not None and b.token not in seen_tokens:
+                seen_tokens.add(b.token)
+                candidates.append(b)
 
-        if not bot:
+        if conv_token:
+            _add(bot_runner.get_bot_by_token(conv_token))
+        if bot_token:
+            _add(bot_runner.get_bot_by_token(bot_token))
+        for _label, tok in bot_runner.running_bots():
+            _add(bot_runner.get_bot_by_token(tok))
+
+        if not candidates:
             self._append_log("❌ Bot 未运行，无法发送消息")
             return
 
         # Warn if the combo selection differs from the conversation bot.
         if bot_token and conv_token and bot_token != conv_token:
             self._append_log(
-                f"⚠️ 已切换为与该用户对话的 Bot（{conv_token[:8]}…），"
+                f"⚠️ 已优先使用与该用户对话的 Bot（{conv_token[:8]}…），"
                 f"所选 Bot 无法向未主动发消息的用户发送私信"
             )
 
         loop = asyncio.get_event_loop()
-        loop.create_task(self._do_send_chat(bot, uid, text))
+        loop.create_task(self._do_send_chat(candidates, uid, text))
 
-    async def _do_send_chat(self, bot, uid: int, text: str):
+    async def _send_via_bot(self, bot, uid: int, text: str):
+        """Send one message through a single bot, with HTML→plain fallback.
+
+        Raises on failure so the caller can try the next candidate bot.
+        """
         try:
+            await bot.send_message(chat_id=uid, text=text, parse_mode="HTML")
+        except Exception as html_err:
+            # Manual replies are raw operator text; if it contains "<"/"&"
+            # or otherwise breaks HTML parsing, Telegram rejects it with
+            # "can't parse entities". Retry once as plain text so the
+            # message still goes out instead of silently failing.
+            if "parse" in str(html_err).lower() or "entit" in str(html_err).lower():
+                await bot.send_message(chat_id=uid, text=text, parse_mode=None)
+            else:
+                raise
+
+    async def _do_send_chat(self, bots, uid: int, text: str):
+        """Try each candidate bot until one delivers the message.
+
+        A "chat not found" (or similar) error means that particular bot has no
+        open chat with the user, so we move on to the next running bot. Only
+        after every candidate fails do we report the failure.
+        """
+        last_err: Exception | None = None
+        for bot in bots:
             try:
-                await bot.send_message(chat_id=uid, text=text, parse_mode="HTML")
-            except Exception as html_err:
-                # Manual replies are raw operator text; if it contains "<"/"&"
-                # or otherwise breaks HTML parsing, Telegram rejects it with
-                # "can't parse entities". Retry once as plain text so the
-                # message still goes out instead of silently failing.
-                if "parse" in str(html_err).lower() or "entit" in str(html_err).lower():
-                    await bot.send_message(chat_id=uid, text=text, parse_mode=None)
-                else:
-                    raise
-            self._append_log(f"✉ 手动回复 [{uid}]: {text}")
-            from bot.handlers import _record_msg, get_chat_store
-            _record_msg(uid, "", "bot", text)
-            store = get_chat_store()
-            self.chat_panel.on_new_message(uid, store)
-        except Exception as e:
-            self._append_log(f"❌ 发送失败 [{uid}]: {e}")
+                await self._send_via_bot(bot, uid, text)
+                self._append_log(f"✉ 手动回复 [{uid}]: {text}")
+                from bot.handlers import _record_msg, get_chat_store
+                # Remember the bot that actually worked so future replies to
+                # this user route to it directly.
+                _record_msg(uid, "", "bot", text, bot)
+                store = get_chat_store()
+                self.chat_panel.on_new_message(uid, store)
+                return
+            except Exception as e:
+                last_err = e
+                label = getattr(getattr(bot, "_me", None), "username", None)
+                who = f"@{label}" if label else bot.token[:8]
+                logging.getLogger(__name__).warning(
+                    f"手动回复 [{uid}] 经 {who} 发送失败，尝试下一个 Bot: {e}")
+
+        self._append_log(f"❌ 发送失败 [{uid}]: {last_err}")
 
     def _on_start(self):
         self._save_all()

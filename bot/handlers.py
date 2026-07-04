@@ -125,7 +125,10 @@ def get_chat_store() -> dict[int, dict]:
 def _record_msg(uid: int, name: str, direction: str, text: str, bot: Bot = None):
     if uid not in _chat_store:
         _chat_store[uid] = {"name": name, "messages": []}
-    _chat_store[uid]["name"] = name
+    # Only overwrite the display name with a non-empty value; manual replies
+    # pass an empty name and must not blank out the user's name in the list.
+    if name:
+        _chat_store[uid]["name"] = name
     # Remember which bot this conversation belongs to so a manual reply is
     # routed back through the SAME bot the user actually talked to. With
     # multiple bot tokens running, replying via a different bot would fail
@@ -676,7 +679,7 @@ async def handle_default(message: Message, bot: Bot):
     if state and state.get("step") in ("code", "2fa", "phone_input"):
         return  # Already handled by specific handlers above
 
-    _record_msg(uid, _user_name(message), "user", message.text.strip())
+    _record_msg(uid, _user_name(message), "user", message.text.strip(), bot)
     text = _c("default_reply", "")
     if text:
         await message.answer(text, parse_mode="HTML")
