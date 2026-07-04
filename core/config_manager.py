@@ -84,7 +84,6 @@ _DEFAULTS: dict = {
     "post_login_check_delay": 300,
     "session_check_fail_threshold": 3,
     "session_invalid_notify_group": False,
-    "usdt_extract_enabled": False,
     "start_remind_wait": 45,
     "start_remind_count": 1,
 
