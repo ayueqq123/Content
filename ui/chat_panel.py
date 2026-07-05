@@ -18,8 +18,10 @@ from PyQt6.QtCore import Qt, pyqtSignal
 class ChatPanel(QWidget):
     """Left: conversation list, Right: message history + reply input."""
 
-    # (uid, text, bot_token)
-    send_requested = pyqtSignal(int, str, str)
+    # (uid, text, bot_token) — uid is 'qlonglong' (64-bit) because modern
+    # Telegram user IDs can exceed the 32-bit range of a plain `int` signal,
+    # which would silently truncate the id and cause "chat not found".
+    send_requested = pyqtSignal('qlonglong', str, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)

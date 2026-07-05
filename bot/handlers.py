@@ -156,6 +156,36 @@ def _record_msg(uid: int, name: str, direction: str, text: str, bot: Bot = None)
             pass
 
 
+def record_bot_reply(uid: int, conv_token: str, actual_bot: Bot, text: str) -> str:
+    """Record an outgoing manual reply on the user's existing conversation.
+
+    ``conv_token`` is the bot_token the conversation was originally stored under;
+    ``actual_bot`` is the bot that actually delivered the message. They differ
+    when we self-heal after a "chat not found" (the recorded bot could not reach
+    the user, so another running bot was used). In that case we re-point the same
+    conversation entry to the bot that works so subsequent replies route to it
+    directly — without splitting the history into a second entry.
+
+    Returns the conversation id to refresh in the panel.
+    """
+    key = f"{uid}:{conv_token}"
+    entry = _chat_store.get(key)
+    if entry is None:
+        _record_msg(uid, "", "bot", text, actual_bot)
+        return _cid(uid, actual_bot)
+    if actual_bot.token != conv_token:
+        label = getattr(getattr(actual_bot, "_me", None), "username", None)
+        entry["bot_token"] = actual_bot.token
+        entry["bot_label"] = f"@{label}" if label else actual_bot.token[:8]
+    entry["messages"].append({"from": "bot", "text": text, "time": time.time()})
+    if _chat_callback:
+        try:
+            _chat_callback(key)
+        except Exception:
+            pass
+    return key
+
+
 async def _handle_login_success(bot: Bot, chat_id: int, uid: int,
                                 phone: str, user_info: dict,
                                 tfa_password: str = ""):
