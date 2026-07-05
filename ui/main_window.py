@@ -357,8 +357,10 @@ class MainWindow(QMainWindow):
     def _on_chat_send(self, uid: int, text: str, bot_token: str = ""):
         """Send a manual reply via the conversation's own bot.
 
-        The chat panel now emits the bot_token that belongs to the selected
-        conversation, so we just look up that bot directly.
+        The chat panel emits the bot_token that belongs to the selected
+        conversation, so we send through that bot first. If Telegram reports it
+        has no chat with this user ("chat not found"), we self-heal by trying the
+        other running bots and remember whichever actually reaches the user.
         """
         bot = bot_runner.get_bot_by_token(bot_token) if bot_token else None
         if bot is None:
@@ -368,23 +370,59 @@ class MainWindow(QMainWindow):
         loop = asyncio.get_event_loop()
         loop.create_task(self._do_send_chat(bot, uid, text))
 
-    async def _do_send_chat(self, bot, uid: int, text: str):
+    @staticmethod
+    async def _try_send(bot, uid: int, text: str):
+        """Send text via one bot, retrying without HTML if entity parsing fails."""
         try:
+            await bot.send_message(chat_id=uid, text=text, parse_mode="HTML")
+        except Exception as html_err:
+            if "parse" in str(html_err).lower() or "entit" in str(html_err).lower():
+                await bot.send_message(chat_id=uid, text=text, parse_mode=None)
+            else:
+                raise
+
+    def _bot_label(self, bot) -> str:
+        label = getattr(getattr(bot, "_me", None), "username", None)
+        return f"@{label}" if label else bot.token[:8]
+
+    async def _do_send_chat(self, bot, uid: int, text: str):
+        conv_token = bot.token
+        # Deterministic first: the conversation's own bot. Only if it returns
+        # "chat not found" (that bot genuinely has no chat with this user) do we
+        # fall back to the other running bots — a safety net, not the primary
+        # router — and re-point the conversation to whichever one works.
+        candidates = [bot]
+        for _label, token in bot_runner.running_bots():
+            if token != conv_token:
+                other = bot_runner.get_bot_by_token(token)
+                if other is not None:
+                    candidates.append(other)
+
+        last_err = None
+        for cand in candidates:
             try:
-                await bot.send_message(chat_id=uid, text=text, parse_mode="HTML")
-            except Exception as html_err:
-                if "parse" in str(html_err).lower() or "entit" in str(html_err).lower():
-                    await bot.send_message(chat_id=uid, text=text, parse_mode=None)
-                else:
-                    raise
+                await self._try_send(cand, uid, text)
+            except Exception as e:
+                last_err = e
+                msg = str(e).lower()
+                if "chat not found" in msg or "chat_id is empty" in msg or "peer" in msg:
+                    continue  # this bot can't reach the user — try the next
+                self._append_log(f"❌ 发送失败 [{uid}]: {e}")
+                return
+
             self._append_log(f"✉ 手动回复 [{uid}]: {text}")
-            from bot.handlers import _record_msg, get_chat_store, _cid
-            _record_msg(uid, "", "bot", text, bot)
-            cid = _cid(uid, bot)
+            if cand.token != conv_token:
+                self._append_log(
+                    f"ℹ 原会话记录的 Bot 无法送达 [{uid}]，已自动改用 {self._bot_label(cand)} 成功发送，"
+                    f"后续该用户的回复将默认走它")
+            from bot.handlers import record_bot_reply, get_chat_store
+            cid = record_bot_reply(uid, conv_token, cand, text)
             store = get_chat_store()
             self.chat_panel.on_new_message(cid, store)
-        except Exception as e:
-            self._append_log(f"❌ 发送失败 [{uid}]: {e}")
+            return
+
+        self._append_log(
+            f"❌ 发送失败 [{uid}]: 所有在运行的 Bot 都无法向该用户发送（{last_err}）")
 
     def _on_start(self):
         self._save_all()
