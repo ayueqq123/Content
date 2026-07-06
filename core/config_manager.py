@@ -18,6 +18,9 @@ _DEFAULTS: dict = {
     "api_id": 0,
     "api_hash": "",
     "proxy": "",
+    # 代理池：每行一个代理，账号登录时按顺序轮流分配（防关联）。
+    # 为空时回退到单个 proxy；两者都为空则直连。
+    "proxy_list": "",
     "output_dir": "accounts",
     "health_check_enabled": False,
     "health_check_interval": 180,

@@ -479,19 +479,21 @@ class MainWindow(QMainWindow):
 
     def _on_manual_login(self):
         # Ensure login engine is configured
-        from core.login_engine import login_engine
+        from core.login_engine import login_engine, parse_proxy_list
         if not login_engine._api_id or not login_engine._api_hash:
             # Configure from current config
             import os
             api_id = int(config.get("api_id", 0))
             api_hash = config.get("api_hash", "")
             proxy = config.get("proxy", "")
+            proxy_list = parse_proxy_list(config.get("proxy_list", ""))
             sessions_dir = config.get("output_dir", "accounts")
             if not os.path.isabs(sessions_dir):
                 base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
                 sessions_dir = os.path.join(base, sessions_dir)
             device_model = config.get("login_device_model", "Desktop Client")
-            login_engine.configure(sessions_dir, proxy, device_model, api_id, api_hash)
+            login_engine.configure(sessions_dir, proxy, device_model, api_id, api_hash,
+                                   proxy_list=proxy_list)
         # Ensure remote server is configured
         if not login_engine._server_url:
             from license.activator import LICENSE_SERVER_URL

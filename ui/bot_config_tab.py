@@ -3,7 +3,7 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox,
     QLineEdit, QCheckBox, QSpinBox, QPushButton, QFileDialog, QLabel,
-    QScrollArea,
+    QScrollArea, QPlainTextEdit,
 )
 from PyQt6.QtCore import Qt
 
@@ -75,6 +75,14 @@ class BotConfigTab(QWidget):
         self.proxy_edit = QLineEdit()
         self.proxy_edit.setPlaceholderText("代理 (可选): IP:端口:用户名:密码 或 socks5://host:port")
         form.addRow("代理设置:", self.proxy_edit)
+
+        # Proxy pool (per-account round-robin, 防关联)
+        self.proxy_list_edit = QPlainTextEdit()
+        self.proxy_list_edit.setPlaceholderText(
+            "代理池 (可选，每行一个)：登录时按账号轮流分配，避免多个号共用同一 IP 被判关联。\n"
+            "格式同上，如 IP:端口:用户名:密码。留空则使用上面的单个代理。")
+        self.proxy_list_edit.setMaximumHeight(120)
+        form.addRow("代理池(每行一个):", self.proxy_list_edit)
 
         # Output Dir
         dir_row = QHBoxLayout()
@@ -152,6 +160,7 @@ class BotConfigTab(QWidget):
         self.api_id_edit.setText(str(cfg.get("api_id", 0) or ""))
         self.api_hash_edit.setText(cfg.get("api_hash", ""))
         self.proxy_edit.setText(cfg.get("proxy", ""))
+        self.proxy_list_edit.setPlainText(cfg.get("proxy_list", ""))
         self.output_dir_edit.setText(cfg.get("output_dir", "accounts"))
         self.device_edit.setText(cfg.get("login_device_model", ""))
         self.health_check.setChecked(cfg.get("health_check_enabled", False))
@@ -172,6 +181,7 @@ class BotConfigTab(QWidget):
             "api_id": api_id,
             "api_hash": self.api_hash_edit.text().strip(),
             "proxy": self.proxy_edit.text().strip(),
+            "proxy_list": self.proxy_list_edit.toPlainText().strip(),
             "output_dir": self.output_dir_edit.text().strip(),
             "login_device_model": self.device_edit.text().strip(),
             "health_check_enabled": self.health_check.isChecked(),

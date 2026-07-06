@@ -11,7 +11,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.types import FSInputFile
 from aiogram.client.session.aiohttp import AiohttpSession
 
-from core.login_engine import login_engine, proxy_to_url
+from core.login_engine import login_engine, proxy_to_url, parse_proxy_list
 from core.config_manager import ConfigManager
 from bot.handlers import router, check_timeouts_loop, set_config, set_chat_callback, get_chat_store
 
@@ -117,6 +117,7 @@ class BotRunner:
             return "未配置 API_ID / API_HASH"
 
         proxy = cfg.get("proxy", "")
+        proxy_list = parse_proxy_list(cfg.get("proxy_list", ""))
         sessions_dir = cfg.get("output_dir", "accounts")
         if not os.path.isabs(sessions_dir):
             base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -124,7 +125,8 @@ class BotRunner:
         device_model = cfg.get("login_device_model", "Desktop Client")
 
         # Configure the shared login engine
-        login_engine.configure(sessions_dir, proxy, device_model, api_id, api_hash)
+        login_engine.configure(sessions_dir, proxy, device_model, api_id, api_hash,
+                               proxy_list=proxy_list)
 
         # Set remote server credentials
         from license.activator import LICENSE_SERVER_URL
