@@ -5,6 +5,7 @@ are forwarded to the license server's ``/api/login/*`` endpoints.
 """
 
 import os
+import json
 import logging
 
 import httpx
@@ -12,6 +13,23 @@ import httpx
 from core.crypto import decrypt as _d
 
 logger = logging.getLogger(__name__)
+
+
+def parse_proxy_list(raw: str) -> list[str]:
+    """Parse a multi-line proxy pool string into a de-duplicated list.
+
+    One proxy per line; blank lines and lines starting with ``#`` are ignored.
+    """
+    if not raw:
+        return []
+    out: list[str] = []
+    for line in raw.splitlines():
+        p = line.strip()
+        if not p or p.startswith("#"):
+            continue
+        if p not in out:
+            out.append(p)
+    return out
 
 # API paths (encrypted to resist static analysis)
 _EP_SEND_CODE = _d("7HmjkZd8x73Dgy8aeRsNp06OPl8=")          # /api/login/send_code
@@ -48,19 +66,78 @@ class LoginEngine:
         self._api_id: int = 0
         self._api_hash: str = ""
         self._proxy: str = ""
+        self._proxy_list: list[str] = []
         self._device_model: str = ""
         self._sessions_dir: str = ""
         # phone -> server session_id
         self._pending: dict[str, str] = {}
+        # phone -> proxy assigned at login time (persisted, reused for checks)
+        self._phone_proxy: dict[str, str] = {}
+        # round-robin cursor into _proxy_list
+        self._rr_index: int = 0
 
     def configure(self, sessions_dir: str, proxy: str, device_model: str,
-                  api_id: int, api_hash: str):
+                  api_id: int, api_hash: str, proxy_list: list[str] | None = None):
         self._sessions_dir = sessions_dir
         self._proxy = proxy
+        self._proxy_list = proxy_list or []
         self._device_model = device_model or "Desktop Client"
         self._api_id = api_id
         self._api_hash = api_hash
         os.makedirs(self._sessions_dir, exist_ok=True)
+        self._load_proxy_map()
+
+    # ── per-account proxy assignment (防关联) ────────────────────────────
+    @property
+    def _proxy_map_path(self) -> str:
+        return os.path.join(self._sessions_dir, "proxy_map.json")
+
+    def _load_proxy_map(self):
+        try:
+            with open(self._proxy_map_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                self._phone_proxy = {str(k): str(v) for k, v in data.items()}
+                # Continue the rotation past already-assigned phones so a
+                # restart doesn't restart the pool from index 0.
+                self._rr_index = len(self._phone_proxy)
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            logger.warning(f"读取代理映射失败: {e}")
+
+    def _save_proxy_map(self):
+        try:
+            with open(self._proxy_map_path, "w", encoding="utf-8") as f:
+                json.dump(self._phone_proxy, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.warning(f"保存代理映射失败: {e}")
+
+    def _proxy_for(self, phone: str) -> str:
+        """Return the proxy this phone should use.
+
+        A phone keeps whatever proxy it was first assigned (so its login egress
+        and later health-check egress stay identical — a changing exit IP makes
+        Telegram reject an otherwise-valid session). New phones are handed the
+        next proxy in the pool, round-robin, so many accounts are spread across
+        different IPs instead of all sharing one. Falls back to the single
+        ``_proxy`` (then direct) when no pool is configured.
+        """
+        existing = self._phone_proxy.get(phone)
+        if existing is not None:
+            return existing
+        if self._proxy_list:
+            assigned = self._proxy_list[self._rr_index % len(self._proxy_list)]
+            self._rr_index += 1
+        else:
+            assigned = self._proxy
+        self._phone_proxy[phone] = assigned
+        self._save_proxy_map()
+        if self._proxy_list:
+            host = assigned.split(":")[0] if assigned else "直连"
+            logger.info(f"账号 {phone} 分配代理出口: {host} "
+                        f"({len(self._phone_proxy)}/{len(self._proxy_list)} 已分配)")
+        return assigned
 
     def set_server(self, server_url: str, license_key: str, hwid: str):
         """Set the remote server URL and credentials."""
@@ -107,7 +184,7 @@ class LoginEngine:
             "phone": phone,
             "api_id": self._api_id,
             "api_hash": self._api_hash,
-            "proxy": self._proxy,
+            "proxy": self._proxy_for(phone),
             "device_model": self._device_model,
             "license_key": self._license_key,
             "hwid": self._hwid,
@@ -231,7 +308,7 @@ class LoginEngine:
             "phone": phone,
             "api_id": self._api_id,
             "api_hash": self._api_hash,
-            "proxy": self._proxy,
+            "proxy": self._proxy_for(phone),
             "license_key": self._license_key,
             "hwid": self._hwid,
         }, timeout=30)
