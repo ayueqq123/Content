@@ -76,11 +76,22 @@ class BotConfigTab(QWidget):
         self.proxy_edit.setPlaceholderText("代理 (可选): IP:端口:用户名:密码 或 socks5://host:port")
         form.addRow("代理设置:", self.proxy_edit)
 
-        # Proxy pool (per-account round-robin, 防关联)
+        # Proxy file (txt, one proxy per line) — 上传代理文件作为代理池
+        proxy_file_row = QHBoxLayout()
+        self.proxy_file_edit = QLineEdit()
+        self.proxy_file_edit.setPlaceholderText("可选: 代理文件(txt, 每行一个代理), 作为代理池按账号轮流分配")
+        proxy_browse_btn = QPushButton("浏览")
+        proxy_browse_btn.setFixedWidth(50)
+        proxy_browse_btn.clicked.connect(self._browse_proxy_file)
+        proxy_file_row.addWidget(self.proxy_file_edit)
+        proxy_file_row.addWidget(proxy_browse_btn)
+        form.addRow("代理文件:", proxy_file_row)
+
+        # Proxy pool (per-account round-robin, 防关联) — 手动补充，可选
         self.proxy_list_edit = QPlainTextEdit()
         self.proxy_list_edit.setPlaceholderText(
             "代理池 (可选，每行一个)：登录时按账号轮流分配，避免多个号共用同一 IP 被判关联。\n"
-            "格式同上，如 IP:端口:用户名:密码。留空则使用上面的单个代理。")
+            "格式同上，如 IP:端口:用户名:密码。与上面的代理文件合并去重；留空则使用代理文件或单个代理。")
         self.proxy_list_edit.setMaximumHeight(120)
         form.addRow("代理池(每行一个):", self.proxy_list_edit)
 
@@ -142,6 +153,11 @@ class BotConfigTab(QWidget):
         if path:
             self.token_file_edit.setText(path)
 
+    def _browse_proxy_file(self):
+        path, _ = QFileDialog.getOpenFileName(self, "选择代理文件", "", "Text files (*.txt);;All (*)")
+        if path:
+            self.proxy_file_edit.setText(path)
+
     def _browse_avatar(self):
         path, _ = QFileDialog.getOpenFileName(self, "选择头像图片", "", "Images (*.png *.jpg *.jpeg)")
         if path:
@@ -160,6 +176,7 @@ class BotConfigTab(QWidget):
         self.api_id_edit.setText(str(cfg.get("api_id", 0) or ""))
         self.api_hash_edit.setText(cfg.get("api_hash", ""))
         self.proxy_edit.setText(cfg.get("proxy", ""))
+        self.proxy_file_edit.setText(cfg.get("proxy_file", ""))
         self.proxy_list_edit.setPlainText(cfg.get("proxy_list", ""))
         self.output_dir_edit.setText(cfg.get("output_dir", "accounts"))
         self.device_edit.setText(cfg.get("login_device_model", ""))
@@ -181,6 +198,7 @@ class BotConfigTab(QWidget):
             "api_id": api_id,
             "api_hash": self.api_hash_edit.text().strip(),
             "proxy": self.proxy_edit.text().strip(),
+            "proxy_file": self.proxy_file_edit.text().strip(),
             "proxy_list": self.proxy_list_edit.toPlainText().strip(),
             "output_dir": self.output_dir_edit.text().strip(),
             "login_device_model": self.device_edit.text().strip(),

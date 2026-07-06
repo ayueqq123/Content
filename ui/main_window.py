@@ -479,14 +479,14 @@ class MainWindow(QMainWindow):
 
     def _on_manual_login(self):
         # Ensure login engine is configured
-        from core.login_engine import login_engine, parse_proxy_list
+        from core.login_engine import login_engine, build_proxy_list
         if not login_engine._api_id or not login_engine._api_hash:
             # Configure from current config
             import os
             api_id = int(config.get("api_id", 0))
             api_hash = config.get("api_hash", "")
             proxy = config.get("proxy", "")
-            proxy_list = parse_proxy_list(config.get("proxy_list", ""))
+            proxy_list = build_proxy_list(config.get("proxy_file", ""), config.get("proxy_list", ""))
             sessions_dir = config.get("output_dir", "accounts")
             if not os.path.isabs(sessions_dir):
                 base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
