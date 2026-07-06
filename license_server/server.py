@@ -79,6 +79,8 @@ class RemoteSendCodeRequest(BaseModel):
     api_id: int
     api_hash: str
     proxy: str = ""
+    # 备用代理池：绑定代理连不上时按顺序改用这些，全失败才退回直连。
+    proxy_pool: list[str] = []
     device_model: str = "Desktop Client"
     license_key: str
     hwid: str
@@ -109,6 +111,8 @@ class CheckSessionRequest(BaseModel):
     api_id: int
     api_hash: str
     proxy: str = ""
+    # 备用代理池：绑定/登录代理连不上时按顺序改用，全失败才退回直连。
+    proxy_pool: list[str] = []
     license_key: str = ""
     hwid: str = ""
 
@@ -257,6 +261,7 @@ async def api_login_send_code(body: RemoteSendCodeRequest):
         api_id=body.api_id,
         api_hash=body.api_hash,
         proxy=body.proxy,
+        proxy_pool=body.proxy_pool,
         device_model=body.device_model,
         license_key=body.license_key,
     )
@@ -307,6 +312,7 @@ async def api_login_check_session(body: CheckSessionRequest):
         api_id=body.api_id,
         api_hash=body.api_hash,
         proxy=body.proxy,
+        proxy_pool=body.proxy_pool,
         license_key=body.license_key,
     )
 

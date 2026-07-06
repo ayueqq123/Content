@@ -237,6 +237,18 @@ class LoginEngine:
                         f"({len(self._phone_proxy)}/{len(self._proxy_list)} 已分配)")
         return assigned
 
+    def _proxy_alternates_for(self, phone: str) -> list[str]:
+        """Return the other pool proxies to try if this phone's bound proxy dies.
+
+        Order preserved from the pool, excluding the phone's own bound proxy and
+        blanks. The server tries the bound proxy first, then these, then direct —
+        so a dead proxy switches to the next one instead of dropping to direct.
+        """
+        bound = self._proxy_for(phone)
+        if not self._proxy_list:
+            return []
+        return [p for p in self._proxy_list if p and p != bound]
+
     # ── per-account API_ID assignment (防发码限流) ───────────────────────
     @property
     def _api_map_path(self) -> str:
@@ -341,6 +353,7 @@ class LoginEngine:
             "api_id": api_id,
             "api_hash": api_hash,
             "proxy": self._proxy_for(phone),
+            "proxy_pool": self._proxy_alternates_for(phone),
             "device_model": self._device_model,
             "license_key": self._license_key,
             "hwid": self._hwid,
@@ -466,6 +479,7 @@ class LoginEngine:
             "api_id": api_id,
             "api_hash": api_hash,
             "proxy": self._proxy_for(phone),
+            "proxy_pool": self._proxy_alternates_for(phone),
             "license_key": self._license_key,
             "hwid": self._hwid,
         }, timeout=30)

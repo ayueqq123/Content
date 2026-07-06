@@ -106,6 +106,7 @@ async def send_code(
     api_id: int,
     api_hash: str,
     proxy: str = "",
+    proxy_pool: Optional[list] = None,
     device_model: str = "Desktop Client",
     license_key: str = "",
 ) -> dict:
@@ -118,12 +119,14 @@ async def send_code(
     session_id = secrets.token_hex(16)
     sess_path = _session_path(session_id, phone, license_key)
 
-    # Ordered egress candidates: try the requested proxy first, then fall back
-    # to a direct connection if the proxy cannot connect. A dead proxy must not
-    # block login outright — we degrade to direct and tell the caller it
-    # happened (via ``proxy_fell_back``) so it can warn the group.
+    # Ordered egress candidates: try the bound proxy first, then the rest of the
+    # proxy pool one by one, and only fall back to a direct connection if EVERY
+    # proxy fails to connect. A dead proxy must not block login outright — we
+    # switch to the next proxy (self-heal), and if none work we degrade to
+    # direct and tell the caller (via ``proxy_fell_back``) so it can warn the
+    # group. The proxy actually used is persisted for later health checks.
     candidates: list[str] = []
-    for cand in (proxy, ""):
+    for cand in (proxy, *(proxy_pool or []), ""):
         if cand not in candidates:
             candidates.append(cand)
 
@@ -158,9 +161,10 @@ async def send_code(
         return {"success": False,
                 "message": f"无法连接 Telegram（代理与直连均失败）: {last_conn_err}"}
 
-    # A non-empty proxy was requested but we ended up on a direct connection,
-    # i.e. the proxy failed and we fell back.
-    proxy_fell_back = bool(proxy) and used_proxy != proxy
+    # A proxy was requested but every pooled proxy failed and we ended up on a
+    # direct connection. (Switching to another pool proxy is a silent self-heal
+    # and is NOT reported as "fell back to direct".)
+    proxy_fell_back = bool(proxy) and used_proxy == ""
 
     try:
         # Persist the proxy this session's auth was created through, so a later
@@ -299,7 +303,8 @@ async def verify_2fa(session_id: str, phone: str, password: str) -> dict:
 
 
 async def check_session_valid(phone: str, api_id: int, api_hash: str,
-                              proxy: str = "", license_key: str = "") -> dict:
+                              proxy: str = "", proxy_pool: Optional[list] = None,
+                              license_key: str = "") -> dict:
     """Check if a session for the given phone is still authorized on Telegram.
 
     Finds the session file under the license_key directory and tries to connect.
@@ -330,15 +335,17 @@ async def check_session_valid(phone: str, api_id: int, api_hash: str,
     base_path = sess_file[:-8]  # remove .session suffix
 
     # Build the ordered list of egresses to try, de-duplicated:
-    #   1) proxy sent with this request (if any)
+    #   1) proxy sent with this request (the phone's bound proxy)
     #   2) the proxy the session was originally logged in through (persisted)
-    #   3) direct connection (no proxy) as a last-resort fallback
-    # This way the check does not hard-depend on any single proxy: if the
-    # login proxy is dead we still fall back to a direct connection instead of
-    # falsely reporting the session invalid. A proxy value of "" means direct.
+    #   3) the rest of the proxy pool, one by one
+    #   4) direct connection (no proxy) as a last-resort fallback
+    # This way the check does not hard-depend on any single proxy: if the bound
+    # /login proxy is dead we try the other pooled proxies before finally
+    # falling back to direct, instead of falsely reporting the session invalid.
+    # A proxy value of "" means direct.
     login_proxy = _load_session_proxy(base_path)
     candidates: list[str] = []
-    for cand in (proxy, login_proxy, ""):
+    for cand in (proxy, login_proxy, *(proxy_pool or []), ""):
         if cand not in candidates:
             candidates.append(cand)
 
