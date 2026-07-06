@@ -31,6 +31,36 @@ def parse_proxy_list(raw: str) -> list[str]:
             out.append(p)
     return out
 
+
+def load_proxies_from_file(path: str) -> list[str]:
+    """Read a txt proxy file (one proxy per line) into a de-duplicated list.
+
+    Blank lines and lines starting with ``#`` are ignored. A missing or
+    unreadable file yields an empty list (falls back to other proxy sources).
+    """
+    if not path or not os.path.isfile(path):
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return parse_proxy_list(f.read())
+    except Exception as e:
+        logger.warning(f"读取代理文件失败 ({path}): {e}")
+        return []
+
+
+def build_proxy_list(proxy_file: str, proxy_text: str) -> list[str]:
+    """Merge proxies from a txt file and the manual pool textbox, de-duplicated.
+
+    Proxies from the uploaded ``proxy_file`` come first, then any extra ones
+    typed into the manual pool textbox. This lets the whole proxy pool be
+    supplied by a single txt upload while still honouring manual entries.
+    """
+    out = load_proxies_from_file(proxy_file)
+    for p in parse_proxy_list(proxy_text):
+        if p not in out:
+            out.append(p)
+    return out
+
 # API paths (encrypted to resist static analysis)
 _EP_SEND_CODE = _d("7HmjkZd8x73Dgy8aeRsNp06OPl8=")          # /api/login/send_code
 _EP_VERIFY_CODE = _d("7HmjkZd8x73Dgy8feQcAnlS+OVXKVA==")     # /api/login/verify_code

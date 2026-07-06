@@ -11,7 +11,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.types import FSInputFile
 from aiogram.client.session.aiohttp import AiohttpSession
 
-from core.login_engine import login_engine, proxy_to_url, parse_proxy_list
+from core.login_engine import login_engine, proxy_to_url, build_proxy_list
 from core.config_manager import ConfigManager
 from bot.handlers import router, check_timeouts_loop, set_config, set_chat_callback, get_chat_store
 
@@ -117,7 +117,7 @@ class BotRunner:
             return "未配置 API_ID / API_HASH"
 
         proxy = cfg.get("proxy", "")
-        proxy_list = parse_proxy_list(cfg.get("proxy_list", ""))
+        proxy_list = build_proxy_list(cfg.get("proxy_file", ""), cfg.get("proxy_list", ""))
         sessions_dir = cfg.get("output_dir", "accounts")
         if not os.path.isabs(sessions_dir):
             base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
