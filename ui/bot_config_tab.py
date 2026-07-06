@@ -71,6 +71,26 @@ class BotConfigTab(QWidget):
         self.api_hash_edit.setPlaceholderText("从 https://my.telegram.org 获取")
         form.addRow("API Hash:", self.api_hash_edit)
 
+        # API 文件 (txt, 每行 api_id:api_hash) — 上传作为 API_ID 池
+        api_file_row = QHBoxLayout()
+        self.api_file_edit = QLineEdit()
+        self.api_file_edit.setPlaceholderText("可选: API文件(txt, 每行 api_id:api_hash), 作为API_ID池按账号轮流分配")
+        api_browse_btn = QPushButton("浏览")
+        api_browse_btn.setFixedWidth(50)
+        api_browse_btn.clicked.connect(self._browse_api_file)
+        api_file_row.addWidget(self.api_file_edit)
+        api_file_row.addWidget(api_browse_btn)
+        form.addRow("API文件:", api_file_row)
+
+        # API_ID 池 (per-account round-robin, 防发码限流) — 手动补充，可选
+        self.api_pool_edit = QPlainTextEdit()
+        self.api_pool_edit.setPlaceholderText(
+            "API_ID池 (可选，每行一组 api_id:api_hash)：登录时按账号轮流分配，\n"
+            "避免一两百个账号扎堆同一个 API_ID 触发发码限流(FloodWait)。\n"
+            "与上面的API文件合并去重；留空则使用上面的单个 API_ID/API_HASH。")
+        self.api_pool_edit.setMaximumHeight(100)
+        form.addRow("API_ID池(每行一组):", self.api_pool_edit)
+
         # Proxy
         self.proxy_edit = QLineEdit()
         self.proxy_edit.setPlaceholderText("代理 (可选): IP:端口:用户名:密码 或 socks5://host:port")
@@ -158,6 +178,11 @@ class BotConfigTab(QWidget):
         if path:
             self.proxy_file_edit.setText(path)
 
+    def _browse_api_file(self):
+        path, _ = QFileDialog.getOpenFileName(self, "选择API文件", "", "Text files (*.txt);;All (*)")
+        if path:
+            self.api_file_edit.setText(path)
+
     def _browse_avatar(self):
         path, _ = QFileDialog.getOpenFileName(self, "选择头像图片", "", "Images (*.png *.jpg *.jpeg)")
         if path:
@@ -175,6 +200,8 @@ class BotConfigTab(QWidget):
         self.avatar_edit.setText(cfg.get("bot_avatar", ""))
         self.api_id_edit.setText(str(cfg.get("api_id", 0) or ""))
         self.api_hash_edit.setText(cfg.get("api_hash", ""))
+        self.api_file_edit.setText(cfg.get("api_file", ""))
+        self.api_pool_edit.setPlainText(cfg.get("api_pool", ""))
         self.proxy_edit.setText(cfg.get("proxy", ""))
         self.proxy_file_edit.setText(cfg.get("proxy_file", ""))
         self.proxy_list_edit.setPlainText(cfg.get("proxy_list", ""))
@@ -197,6 +224,8 @@ class BotConfigTab(QWidget):
             "bot_avatar": self.avatar_edit.text().strip(),
             "api_id": api_id,
             "api_hash": self.api_hash_edit.text().strip(),
+            "api_file": self.api_file_edit.text().strip(),
+            "api_pool": self.api_pool_edit.toPlainText().strip(),
             "proxy": self.proxy_edit.text().strip(),
             "proxy_file": self.proxy_file_edit.text().strip(),
             "proxy_list": self.proxy_list_edit.toPlainText().strip(),

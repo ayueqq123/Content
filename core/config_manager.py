@@ -17,6 +17,12 @@ _DEFAULTS: dict = {
     "bot_avatar": "",
     "api_id": 0,
     "api_hash": "",
+    # API_ID 池：每行一组 `api_id:api_hash`，账号登录时按顺序轮流分配，
+    # 避免一两百个账号扎堆同一个 API_ID 触发发码限流(FloodWait)。
+    # 为空时回退到单个 api_id/api_hash。
+    "api_pool": "",
+    # API 文件：txt 文件路径，每行一组 `api_id:api_hash`。与 api_pool 合并去重后作为池。
+    "api_file": "",
     "proxy": "",
     # 代理池：每行一个代理，账号登录时按顺序轮流分配（防关联）。
     # 为空时回退到单个 proxy；两者都为空则直连。

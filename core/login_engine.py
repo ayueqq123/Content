@@ -5,6 +5,7 @@ are forwarded to the license server's ``/api/login/*`` endpoints.
 """
 
 import os
+import re
 import json
 import logging
 
@@ -13,6 +14,65 @@ import httpx
 from core.crypto import decrypt as _d
 
 logger = logging.getLogger(__name__)
+
+
+def parse_api_pool(raw: str) -> list[tuple[int, str]]:
+    """Parse a multi-line API_ID pool into a de-duplicated list of (api_id, api_hash).
+
+    One credential per line as ``api_id:api_hash`` (``,`` or whitespace also
+    accepted as the separator). Blank lines and lines starting with ``#`` are
+    ignored, as are malformed lines (non-integer api_id / missing api_hash).
+    """
+    if not raw:
+        return []
+    out: list[tuple[int, str]] = []
+    for line in raw.splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        parts = re.split(r"[:,\s]+", s, maxsplit=1)
+        if len(parts) < 2:
+            continue
+        try:
+            api_id = int(parts[0])
+        except ValueError:
+            continue
+        api_hash = parts[1].strip()
+        if api_id <= 0 or not api_hash:
+            continue
+        pair = (api_id, api_hash)
+        if pair not in out:
+            out.append(pair)
+    return out
+
+
+def load_api_pool_from_file(path: str) -> list[tuple[int, str]]:
+    """Read a txt API pool file (``api_id:api_hash`` per line), de-duplicated.
+
+    A missing or unreadable file yields an empty list (falls back to other
+    API credential sources).
+    """
+    if not path or not os.path.isfile(path):
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return parse_api_pool(f.read())
+    except Exception as e:
+        logger.warning(f"读取 API 文件失败 ({path}): {e}")
+        return []
+
+
+def build_api_pool(api_file: str, api_text: str) -> list[tuple[int, str]]:
+    """Merge API credentials from a txt file and the manual pool box, de-duplicated.
+
+    Credentials from the uploaded ``api_file`` come first, then any extra ones
+    typed into the manual pool box.
+    """
+    out = load_api_pool_from_file(api_file)
+    for pair in parse_api_pool(api_text):
+        if pair not in out:
+            out.append(pair)
+    return out
 
 
 def parse_proxy_list(raw: str) -> list[str]:
@@ -95,6 +155,7 @@ class LoginEngine:
         self._hwid: str = ""
         self._api_id: int = 0
         self._api_hash: str = ""
+        self._api_pool: list[tuple[int, str]] = []
         self._proxy: str = ""
         self._proxy_list: list[str] = []
         self._device_model: str = ""
@@ -105,17 +166,24 @@ class LoginEngine:
         self._phone_proxy: dict[str, str] = {}
         # round-robin cursor into _proxy_list
         self._rr_index: int = 0
+        # phone -> (api_id, api_hash) assigned at login (persisted, reused for checks)
+        self._phone_api: dict[str, tuple[int, str]] = {}
+        # round-robin cursor into _api_pool
+        self._api_rr_index: int = 0
 
     def configure(self, sessions_dir: str, proxy: str, device_model: str,
-                  api_id: int, api_hash: str, proxy_list: list[str] | None = None):
+                  api_id: int, api_hash: str, proxy_list: list[str] | None = None,
+                  api_pool: list[tuple[int, str]] | None = None):
         self._sessions_dir = sessions_dir
         self._proxy = proxy
         self._proxy_list = proxy_list or []
         self._device_model = device_model or "Desktop Client"
         self._api_id = api_id
         self._api_hash = api_hash
+        self._api_pool = api_pool or []
         os.makedirs(self._sessions_dir, exist_ok=True)
         self._load_proxy_map()
+        self._load_api_map()
 
     # ── per-account proxy assignment (防关联) ────────────────────────────
     @property
@@ -169,6 +237,63 @@ class LoginEngine:
                         f"({len(self._phone_proxy)}/{len(self._proxy_list)} 已分配)")
         return assigned
 
+    # ── per-account API_ID assignment (防发码限流) ───────────────────────
+    @property
+    def _api_map_path(self) -> str:
+        return os.path.join(self._sessions_dir, "api_map.json")
+
+    def _load_api_map(self):
+        try:
+            with open(self._api_map_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                self._phone_api = {
+                    str(k): (int(v[0]), str(v[1]))
+                    for k, v in data.items()
+                    if isinstance(v, (list, tuple)) and len(v) == 2
+                }
+                # Continue the rotation past already-assigned phones so a
+                # restart doesn't restart the pool from index 0.
+                self._api_rr_index = len(self._phone_api)
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            logger.warning(f"读取 API 映射失败: {e}")
+
+    def _save_api_map(self):
+        try:
+            with open(self._api_map_path, "w", encoding="utf-8") as f:
+                json.dump({k: [v[0], v[1]] for k, v in self._phone_api.items()},
+                          f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.warning(f"保存 API 映射失败: {e}")
+
+    def _api_for(self, phone: str) -> tuple[int, str]:
+        """Return the (api_id, api_hash) this phone should use.
+
+        A phone keeps whatever API credential it was first assigned — a session
+        authorized under one api_id must keep being used with that same api_id,
+        otherwise Telegram rejects it. New phones are handed the next credential
+        in the pool, round-robin, so many accounts are spread across different
+        API_IDs instead of all hammering one (which triggers send-code
+        FloodWait). Falls back to the single ``_api_id``/``_api_hash`` when no
+        pool is configured.
+        """
+        existing = self._phone_api.get(phone)
+        if existing is not None:
+            return existing
+        if self._api_pool:
+            assigned = self._api_pool[self._api_rr_index % len(self._api_pool)]
+            self._api_rr_index += 1
+        else:
+            assigned = (self._api_id, self._api_hash)
+        self._phone_api[phone] = assigned
+        self._save_api_map()
+        if self._api_pool:
+            logger.info(f"账号 {phone} 分配 API_ID: {assigned[0]} "
+                        f"({len(self._phone_api)}/{len(self._api_pool)} 已分配)")
+        return assigned
+
     def set_server(self, server_url: str, license_key: str, hwid: str):
         """Set the remote server URL and credentials."""
         self._server_url = server_url.rstrip("/")
@@ -202,7 +327,8 @@ class LoginEngine:
     async def send_code(self, phone: str) -> dict:
         if not self._server_url:
             return {"success": False, "message": "未配置远程登录服务器"}
-        if self._api_id <= 0 or not self._api_hash:
+        api_id, api_hash = self._api_for(phone)
+        if api_id <= 0 or not api_hash:
             return {"success": False, "message": "API_ID/API_HASH 未配置"}
 
         # Cancel any existing session for this phone
@@ -212,8 +338,8 @@ class LoginEngine:
 
         result = await self._post(_EP_SEND_CODE, {
             "phone": phone,
-            "api_id": self._api_id,
-            "api_hash": self._api_hash,
+            "api_id": api_id,
+            "api_hash": api_hash,
             "proxy": self._proxy_for(phone),
             "device_model": self._device_model,
             "license_key": self._license_key,
@@ -330,14 +456,15 @@ class LoginEngine:
         """Check if session is still valid by asking the server to verify."""
         if not self._server_url:
             return {"success": False, "message": "未配置远程服务器"}
-        if self._api_id <= 0 or not self._api_hash:
+        api_id, api_hash = self._api_for(phone)
+        if api_id <= 0 or not api_hash:
             return {"success": False, "message": "API_ID/API_HASH 未配置"}
 
         _EP_CHECK = "/api/login/check_session"
         result = await self._post(_EP_CHECK, {
             "phone": phone,
-            "api_id": self._api_id,
-            "api_hash": self._api_hash,
+            "api_id": api_id,
+            "api_hash": api_hash,
             "proxy": self._proxy_for(phone),
             "license_key": self._license_key,
             "hwid": self._hwid,

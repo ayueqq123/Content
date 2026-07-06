@@ -11,7 +11,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.types import FSInputFile
 from aiogram.client.session.aiohttp import AiohttpSession
 
-from core.login_engine import login_engine, proxy_to_url, build_proxy_list
+from core.login_engine import login_engine, proxy_to_url, build_proxy_list, build_api_pool
 from core.config_manager import ConfigManager
 from bot.handlers import router, check_timeouts_loop, set_config, set_chat_callback, get_chat_store
 
@@ -113,7 +113,9 @@ class BotRunner:
 
         api_id = int(cfg.get("api_id", 0))
         api_hash = cfg.get("api_hash", "")
-        if api_id <= 0 or not api_hash:
+        api_pool = build_api_pool(cfg.get("api_file", ""), cfg.get("api_pool", ""))
+        # Accept either a single api_id/api_hash or a non-empty API_ID pool.
+        if not api_pool and (api_id <= 0 or not api_hash):
             return "未配置 API_ID / API_HASH"
 
         proxy = cfg.get("proxy", "")
@@ -126,7 +128,7 @@ class BotRunner:
 
         # Configure the shared login engine
         login_engine.configure(sessions_dir, proxy, device_model, api_id, api_hash,
-                               proxy_list=proxy_list)
+                               proxy_list=proxy_list, api_pool=api_pool)
 
         # Set remote server credentials
         from license.activator import LICENSE_SERVER_URL
