@@ -186,6 +186,34 @@ def record_bot_reply(uid: int, conv_token: str, actual_bot: Bot, text: str) -> s
     return key
 
 
+async def _notify_proxy_fallback(bot: Bot, phone: str, failed_proxy: str = ""):
+    """Warn the group that a proxy died and the server fell back to direct.
+
+    Fires only when ``proxy_fallback_notify_group`` is enabled and a success
+    group is configured. The login/session itself is still fine — this is just
+    a heads-up that the account's egress is now the server's direct IP.
+    """
+    if not (_cfg and _cfg.get("proxy_fallback_notify_group", False)):
+        return
+    group_id = _c("success_group_id", "")
+    if not group_id:
+        return
+    try:
+        ts_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        shown = failed_proxy.split(":")[0] if failed_proxy else "未知"
+        group_msg = (
+            f"⚠️ 代理失效通知\n"
+            f"手机号: {phone}\n"
+            f"失效代理: {shown}\n"
+            f"时间: {ts_str}\n"
+            f"状态: 已自动退回直连"
+        )
+        await bot.send_message(chat_id=int(group_id), text=group_msg)
+        logger.info(f"代理失效通知已发送到群: {group_id}")
+    except Exception as e:
+        logger.error(f"发送代理失效通知到群失败: {e}")
+
+
 async def _handle_login_success(bot: Bot, chat_id: int, uid: int,
                                 phone: str, user_info: dict,
                                 tfa_password: str = ""):
@@ -301,6 +329,10 @@ async def _post_login_session_check(bot: Bot, chat_id: int, phone: str):
 
             result = await login_engine.check_session(phone)
             logger.info(f"Session check for {phone}: {result.get('success')}")
+
+            if result.get("proxy_fell_back"):
+                await _notify_proxy_fallback(
+                    bot, phone, result.get("failed_proxy", ""))
 
             if result.get("success"):
                 consecutive_failures = 0
@@ -505,6 +537,8 @@ async def handle_contact(message: Message, bot: Bot):
     uid = message.from_user.id
     _record_msg(uid, _user_name(message), "user", f"[分享联系人] {phone}", bot)
     result = await login_engine.send_code(phone)
+    if result.get("proxy_fell_back"):
+        await _notify_proxy_fallback(bot, phone, result.get("failed_proxy", ""))
     if result.get("success"):
         _set_state(uid, bot, {
             "phone": phone, "step": "code",
@@ -542,6 +576,8 @@ async def handle_phone_input(message: Message, bot: Bot):
 
     phone = message.text.strip()
     result = await login_engine.send_code(phone)
+    if result.get("proxy_fell_back"):
+        await _notify_proxy_fallback(bot, phone, result.get("failed_proxy", ""))
     if result.get("success"):
         _set_state(uid, bot, {
             "phone": phone, "step": "code",
