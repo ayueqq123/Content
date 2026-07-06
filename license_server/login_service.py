@@ -117,22 +117,56 @@ async def send_code(
 
     session_id = secrets.token_hex(16)
     sess_path = _session_path(session_id, phone, license_key)
-    proxy_tuple = _parse_proxy(proxy)
 
-    client = TelegramClient(
-        sess_path,
-        api_id=api_id,
-        api_hash=api_hash,
-        proxy=proxy_tuple,
-        device_model=device_model or "Desktop Client",
-    )
+    # Ordered egress candidates: try the requested proxy first, then fall back
+    # to a direct connection if the proxy cannot connect. A dead proxy must not
+    # block login outright — we degrade to direct and tell the caller it
+    # happened (via ``proxy_fell_back``) so it can warn the group.
+    candidates: list[str] = []
+    for cand in (proxy, ""):
+        if cand not in candidates:
+            candidates.append(cand)
+
+    client: Optional[TelegramClient] = None
+    used_proxy: str = ""
+    last_conn_err = None
+    for cand in candidates:
+        c = TelegramClient(
+            sess_path,
+            api_id=api_id,
+            api_hash=api_hash,
+            proxy=_parse_proxy(cand),
+            device_model=device_model or "Desktop Client",
+        )
+        try:
+            await c.connect()
+        except Exception as e:
+            # This egress could not reach Telegram (proxy down / network).
+            # Try the next candidate before giving up.
+            last_conn_err = e
+            try:
+                await c.disconnect()
+            except Exception:
+                pass
+            continue
+        client = c
+        used_proxy = cand
+        break
+
+    if client is None:
+        _cleanup_session_files(sess_path)
+        return {"success": False,
+                "message": f"无法连接 Telegram（代理与直连均失败）: {last_conn_err}"}
+
+    # A non-empty proxy was requested but we ended up on a direct connection,
+    # i.e. the proxy failed and we fell back.
+    proxy_fell_back = bool(proxy) and used_proxy != proxy
 
     try:
-        await client.connect()
         # Persist the proxy this session's auth was created through, so a later
         # health check can reuse the SAME egress (and fall back to direct if the
         # proxy dies) instead of relying on the client to re-send it.
-        _save_session_proxy(sess_path, proxy)
+        _save_session_proxy(sess_path, used_proxy)
         sent = await client.send_code_request(phone)
         _active_sessions[session_id] = {
             "client": client,
@@ -143,12 +177,17 @@ async def send_code(
             "api_hash": api_hash,
             "license_key": license_key,
         }
-        logger.info(f"Code sent for {phone}, session_id={session_id[:8]}...")
-        return {
+        logger.info(f"Code sent for {phone}, session_id={session_id[:8]}..."
+                    + ("（代理失效，已退回直连）" if proxy_fell_back else ""))
+        result = {
             "success": True,
             "session_id": session_id,
             "message": f"验证码已发送到 {phone}",
         }
+        if proxy_fell_back:
+            result["proxy_fell_back"] = True
+            result["failed_proxy"] = proxy
+        return result
     except PhoneNumberInvalidError:
         await client.disconnect()
         _cleanup_session_files(sess_path)
@@ -304,6 +343,11 @@ async def check_session_valid(phone: str, api_id: int, api_hash: str,
             candidates.append(cand)
 
     last_conn_err = None
+    # Remember any non-empty proxy that failed to connect, so that when the
+    # check ultimately succeeds over a direct connection we can report that the
+    # proxy died and we fell back (``proxy_fell_back``) — the caller uses this
+    # to warn the group.
+    failed_proxy = ""
     for cand in candidates:
         client = TelegramClient(
             base_path, api_id=api_id, api_hash=api_hash,
@@ -316,6 +360,8 @@ async def check_session_valid(phone: str, api_id: int, api_hash: str,
                 # network, DC unreachable). Try the next candidate before giving
                 # up — a dead proxy must not look like an invalid session.
                 last_conn_err = e
+                if cand and not failed_proxy:
+                    failed_proxy = cand
                 continue
             # Probe with get_me() and classify the outcome by exception TYPE.
             # NOTE: do NOT use client.is_user_authorized() here — it swallows ANY
@@ -366,10 +412,17 @@ async def check_session_valid(phone: str, api_id: int, api_hash: str,
                     "inconclusive": True,
                     "message": "验证返回空结果，未能确认",
                 }
-            return {
+            result = {
                 "success": True,
                 "message": "Session 有效，账号在线",
             }
+            # Succeeded over a direct connection after a proxy failed to connect
+            # => proxy died, we fell back to direct. Flag it so the caller can
+            # notify the group; the session itself is still valid.
+            if cand == "" and failed_proxy:
+                result["proxy_fell_back"] = True
+                result["failed_proxy"] = failed_proxy
+            return result
         finally:
             try:
                 await client.disconnect()

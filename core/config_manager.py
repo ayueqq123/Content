@@ -89,6 +89,8 @@ _DEFAULTS: dict = {
     "post_login_check_delay": 300,
     "session_check_fail_threshold": 3,
     "session_invalid_notify_group": False,
+    # 代理失效（连不上，自动退回直连）时是否发送通知到群
+    "proxy_fallback_notify_group": False,
     "start_remind_wait": 45,
     "start_remind_count": 1,
 
