@@ -37,6 +37,18 @@ _active_sessions: dict[str, dict] = {}
 # Auto-cleanup sessions older than 10 minutes
 _SESSION_TTL = 600
 
+# Per-candidate connection tuning for the proxy-failover chain. Telethon's
+# defaults (connection_retries=5, timeout=10) let a single dead proxy block for
+# ~50s before the next candidate is tried; with a proxy pool that turned
+# send_code / check_session into multi-minute stalls. We fail fast on each
+# candidate and rely on the ordered list (bound proxy -> a few pool alternates
+# -> direct) for resilience.
+_CONNECT_TIMEOUT = 8   # seconds per connection attempt
+_CONNECT_RETRIES = 1   # attempts per candidate before moving to the next
+# Cap how many pooled alternates we actually try, as defense-in-depth in case a
+# client still sends the whole pool.
+_MAX_POOL_CANDIDATES = 5
+
 # Per-session locks to prevent concurrent verify operations on the same session.
 # Without this, two identical verify_code / verify_2fa requests arriving in the
 # same event-loop tick can both read the session before either pops it, letting
@@ -73,6 +85,37 @@ def _parse_proxy(proxy_str: str) -> Optional[tuple]:
     username = parts[2] if len(parts) > 2 else None
     password = parts[3] if len(parts) > 3 else None
     return (socks.SOCKS5, host, port, True, username, password)
+
+
+def _make_client(session: str, api_id: int, api_hash: str, cand: str,
+                 device_model: Optional[str] = None) -> "TelegramClient":
+    """Build a Telethon client for one egress candidate that fails fast.
+
+    A short per-attempt timeout and a single connection attempt keep a dead
+    proxy from stalling the whole failover chain.
+    """
+    kwargs = dict(
+        api_id=api_id,
+        api_hash=api_hash,
+        proxy=_parse_proxy(cand),
+        timeout=_CONNECT_TIMEOUT,
+        connection_retries=_CONNECT_RETRIES,
+        retry_delay=0,
+    )
+    if device_model:
+        kwargs["device_model"] = device_model
+    return TelegramClient(session, **kwargs)
+
+
+def _build_candidates(*ordered: str, pool: Optional[list] = None) -> list[str]:
+    """De-duplicated egress order: the given fixed candidates, then a capped
+    slice of the pool. Always ends with "" (direct) as the last resort."""
+    capped_pool = list(pool or [])[:_MAX_POOL_CANDIDATES]
+    candidates: list[str] = []
+    for cand in (*ordered, *capped_pool, ""):
+        if cand not in candidates:
+            candidates.append(cand)
+    return candidates
 
 
 def _license_dir(license_key: str) -> str:
@@ -125,22 +168,14 @@ async def send_code(
     # switch to the next proxy (self-heal), and if none work we degrade to
     # direct and tell the caller (via ``proxy_fell_back``) so it can warn the
     # group. The proxy actually used is persisted for later health checks.
-    candidates: list[str] = []
-    for cand in (proxy, *(proxy_pool or []), ""):
-        if cand not in candidates:
-            candidates.append(cand)
+    candidates = _build_candidates(proxy, pool=proxy_pool)
 
     client: Optional[TelegramClient] = None
     used_proxy: str = ""
     last_conn_err = None
     for cand in candidates:
-        c = TelegramClient(
-            sess_path,
-            api_id=api_id,
-            api_hash=api_hash,
-            proxy=_parse_proxy(cand),
-            device_model=device_model or "Desktop Client",
-        )
+        c = _make_client(sess_path, api_id, api_hash, cand,
+                         device_model=device_model or "Desktop Client")
         try:
             await c.connect()
         except Exception as e:
@@ -344,10 +379,7 @@ async def check_session_valid(phone: str, api_id: int, api_hash: str,
     # falling back to direct, instead of falsely reporting the session invalid.
     # A proxy value of "" means direct.
     login_proxy = _load_session_proxy(base_path)
-    candidates: list[str] = []
-    for cand in (proxy, login_proxy, *(proxy_pool or []), ""):
-        if cand not in candidates:
-            candidates.append(cand)
+    candidates = _build_candidates(proxy, login_proxy, pool=proxy_pool)
 
     last_conn_err = None
     # Remember any non-empty proxy that failed to connect, so that when the
@@ -356,9 +388,7 @@ async def check_session_valid(phone: str, api_id: int, api_hash: str,
     # to warn the group.
     failed_proxy = ""
     for cand in candidates:
-        client = TelegramClient(
-            base_path, api_id=api_id, api_hash=api_hash,
-            proxy=_parse_proxy(cand))
+        client = _make_client(base_path, api_id, api_hash, cand)
         try:
             try:
                 await client.connect()

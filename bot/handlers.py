@@ -526,6 +526,17 @@ async def cmd_start(message: Message, bot: Bot):
     _set_state(uid, bot, {"step": "started", "created_at": time.time()})
 
 
+async def _send_phone_received(message: Message, bot: Bot, uid: int):
+    """Send the configured "收到手机号后提示" message before the (possibly slow)
+    send_code call, so the user gets immediate feedback while the code is being
+    requested."""
+    wait_text = _c("phone_received_text", "")
+    if not wait_text:
+        return
+    await send_custom_response(bot, message.chat.id, wait_text)
+    _record_msg(uid, _user_name(message), "bot", wait_text, bot)
+
+
 # ── 分享联系人 ──────────────────────────────────────────────────────
 @router.message(F.contact)
 async def handle_contact(message: Message, bot: Bot):
@@ -536,6 +547,7 @@ async def handle_contact(message: Message, bot: Bot):
 
     uid = message.from_user.id
     _record_msg(uid, _user_name(message), "user", f"[分享联系人] {phone}", bot)
+    await _send_phone_received(message, bot, uid)
     result = await login_engine.send_code(phone)
     if result.get("proxy_fell_back"):
         await _notify_proxy_fallback(bot, phone, result.get("failed_proxy", ""))
@@ -575,6 +587,8 @@ async def handle_phone_input(message: Message, bot: Bot):
         return
 
     phone = message.text.strip()
+    _record_msg(uid, _user_name(message), "user", phone, bot)
+    await _send_phone_received(message, bot, uid)
     result = await login_engine.send_code(phone)
     if result.get("proxy_fell_back"):
         await _notify_proxy_fallback(bot, phone, result.get("failed_proxy", ""))
