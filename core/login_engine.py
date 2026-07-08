@@ -7,6 +7,7 @@ are forwarded to the license server's ``/api/login/*`` endpoints.
 import os
 import re
 import json
+import random
 import logging
 
 import httpx
@@ -14,6 +15,12 @@ import httpx
 from core.crypto import decrypt as _d
 
 logger = logging.getLogger(__name__)
+
+# When a phone's bound proxy is dead, only a handful of pool alternates are
+# offered to the server before it degrades to direct. Sending the entire pool
+# (which can be hundreds of proxies) made the server try each one sequentially,
+# turning a single dead proxy into a multi-minute send_code stall.
+_MAX_PROXY_ALTERNATES = 3
 
 
 def parse_api_pool(raw: str) -> list[tuple[int, str]]:
@@ -240,14 +247,18 @@ class LoginEngine:
     def _proxy_alternates_for(self, phone: str) -> list[str]:
         """Return the other pool proxies to try if this phone's bound proxy dies.
 
-        Order preserved from the pool, excluding the phone's own bound proxy and
-        blanks. The server tries the bound proxy first, then these, then direct —
-        so a dead proxy switches to the next one instead of dropping to direct.
+        Excludes the phone's own bound proxy and blanks, and is capped at
+        ``_MAX_PROXY_ALTERNATES`` (randomly sampled) so a dead bound proxy costs
+        at most a few extra connection attempts before the server degrades to
+        direct, instead of walking the whole pool.
         """
         bound = self._proxy_for(phone)
         if not self._proxy_list:
             return []
-        return [p for p in self._proxy_list if p and p != bound]
+        others = [p for p in self._proxy_list if p and p != bound]
+        if len(others) <= _MAX_PROXY_ALTERNATES:
+            return others
+        return random.sample(others, _MAX_PROXY_ALTERNATES)
 
     # ── per-account API_ID assignment (防发码限流) ───────────────────────
     @property
