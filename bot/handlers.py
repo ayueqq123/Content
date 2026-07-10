@@ -6,6 +6,7 @@ Logs are forwarded to a Qt signal so the GUI can display them.
 
 import re
 import os
+import html
 import asyncio
 import time
 import random
@@ -494,6 +495,36 @@ def _user_name(message: Message) -> str:
     return name or str(u.id)
 
 
+def _render_template(text: str, message: Message) -> str:
+    """Substitute {占位符} with the sender's Telegram profile fields.
+
+    Names are HTML-escaped (messages are sent with parse_mode="HTML") so a
+    name containing < & > can't break the markup. Supports first/last/full
+    name, username, id and an HTML mention link; a few aliases are accepted.
+    """
+    if not text or "{" not in text:
+        return text
+    u = message.from_user
+    first = html.escape(getattr(u, "first_name", "") or "") if u else ""
+    last = html.escape(getattr(u, "last_name", "") or "") if u else ""
+    full = " ".join(p for p in (first, last) if p)
+    username = html.escape(getattr(u, "username", "") or "") if u else ""
+    uid = str(getattr(u, "id", "") or "") if u else ""
+    mention = (f'<a href="tg://user?id={uid}">{full or first or username or uid}</a>'
+               if uid else (full or first or username))
+    fields = {
+        "first_name": first, "fname": first,
+        "last_name": last, "lname": last,
+        "full_name": full, "name": full, "fullname": full,
+        "username": username,
+        "id": uid, "user_id": uid,
+        "mention": mention,
+    }
+    for key, val in fields.items():
+        text = text.replace("{" + key + "}", val)
+    return text
+
+
 @router.message(Command("start"))
 async def cmd_start(message: Message, bot: Bot):
     uid = message.from_user.id
@@ -502,7 +533,7 @@ async def cmd_start(message: Message, bot: Bot):
         await login_engine.cancel_pending(old["phone"])
 
     _record_msg(uid, _user_name(message), "user", "/start", bot)
-    text = _c("start_text", "欢迎使用")
+    text = _render_template(_c("start_text", "欢迎使用"), message)
     mode = "contact"
     reply_markup = main_menu_kb(mode, _phone_btn_label())
     await send_custom_response(bot, message.chat.id, text, None, reply_markup)
