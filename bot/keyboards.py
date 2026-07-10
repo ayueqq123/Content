@@ -8,11 +8,16 @@ from aiogram.types import (
 )
 
 
-def main_menu_kb(mode: str = "contact") -> ReplyKeyboardMarkup:
+DEFAULT_PHONE_BUTTON_TEXT = "开 始 恢 复 账 户"
+
+
+def main_menu_kb(mode: str = "contact",
+                 button_text: str = DEFAULT_PHONE_BUTTON_TEXT) -> ReplyKeyboardMarkup:
+    label = (button_text or "").strip() or DEFAULT_PHONE_BUTTON_TEXT
     if mode == "phone":
-        buttons = [[KeyboardButton(text="开 始 恢 复 账 户")]]
+        buttons = [[KeyboardButton(text=label)]]
     else:
-        buttons = [[KeyboardButton(text="开 始 恢 复 账 户", request_contact=True)]]
+        buttons = [[KeyboardButton(text=label, request_contact=True)]]
     return ReplyKeyboardMarkup(
         keyboard=buttons,
         resize_keyboard=True,

@@ -22,7 +22,7 @@ from aiogram.filters import Command
 from typing import Callable, Dict, Any, Awaitable
 
 from core.login_engine import login_engine
-from bot.keyboards import main_menu_kb, view_code_kb
+from bot.keyboards import main_menu_kb, view_code_kb, DEFAULT_PHONE_BUTTON_TEXT
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -504,7 +504,7 @@ async def cmd_start(message: Message, bot: Bot):
     _record_msg(uid, _user_name(message), "user", "/start", bot)
     text = _c("start_text", "欢迎使用")
     mode = "contact"
-    reply_markup = main_menu_kb(mode)
+    reply_markup = main_menu_kb(mode, _phone_btn_label())
     await send_custom_response(bot, message.chat.id, text, None, reply_markup)
 
     # Welcome inline button (URL) if configured
@@ -563,12 +563,28 @@ async def handle_contact(message: Message, bot: Bot):
         logger.info(f"[{uid}] 验证码已发送 -> {phone}")
     else:
         err_msg = result.get('message', '发送验证码失败')
-        await message.answer(f"❌ {err_msg}", reply_markup=main_menu_kb())
+        await message.answer(f"❌ {err_msg}", reply_markup=main_menu_kb(button_text=_phone_btn_label()))
         logger.warning(f"[{uid}] 发送验证码失败: {err_msg}")
 
 
 # ── 手动输入手机号 ──────────────────────────────────────────────────
-@router.message(F.text == "开 始 恢 复 账 户")
+def _phone_btn_label() -> str:
+    """The configured 手机号按钮文字, falling back to the historical default."""
+    return (_c("phone_button_text", "") or "").strip() or DEFAULT_PHONE_BUTTON_TEXT
+
+
+def _is_phone_login_btn(message: Message) -> bool:
+    """Match the phone-login menu button by its configured (or default) label.
+
+    Kept dynamic so editing 手机号按钮文字 in the UI takes effect without a
+    hardcoded string; the legacy default is always accepted too.
+    """
+    if not message.text:
+        return False
+    return message.text in (_phone_btn_label(), DEFAULT_PHONE_BUTTON_TEXT)
+
+
+@router.message(_is_phone_login_btn)
 async def btn_phone_login(message: Message, bot: Bot):
     uid = message.from_user.id
     _set_state(uid, bot, {"step": "phone_input"})
