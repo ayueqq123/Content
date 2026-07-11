@@ -537,12 +537,13 @@ async def cmd_start(message: Message, bot: Bot):
         await login_engine.cancel_pending(old["phone"])
 
     _record_msg(uid, _user_name(message), "user", "/start", bot)
-    raw = _c("start_text", "欢迎使用")
     mode = "contact"
     reply_markup = main_menu_kb(mode, _phone_btn_label())
-    # 用单独一行 `---`（三个及以上短横线）把 /start 回复拆成多条依次发送；
-    # 键盘按钮只挂在最后一条上。没有分隔符时行为不变（发单条）。
-    segments = [s.strip() for s in _MSG_SPLIT_RE.split(raw)]
+    # /start 回复可发多条：先「/start 回复」，再「/start 回复2」（填了才发）；
+    # 每个框内还可用单独一行 `---`（3+ 短横线）继续拆分。键盘按钮只挂在最后一条上。
+    segments: list[str] = []
+    for raw in (_c("start_text", "欢迎使用"), _c("start_text_2", "")):
+        segments += [s.strip() for s in _MSG_SPLIT_RE.split(raw)]
     segments = [s for s in segments if s] or [""]
     text = _render_template(segments[-1], message)
     for seg in segments[:-1]:

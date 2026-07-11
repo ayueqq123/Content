@@ -47,6 +47,8 @@ _DEFAULTS: dict = {
         "⚠️<b>注意！您的账号存在异常情况可能被注销！</b>\n"
         "请点击下方 开始恢复账号"
     ),
+    # /start 第二条回复：非空时在 /start 回复之后再单独发一条，键盘按钮挂在它上面。
+    "start_text_2": "",
     "start_no_response_text": "⚠️请尽快回复机器人 (注意：超时将会删除失败）！",
     "default_reply": "点击下方按钮开始收复账户...",
     "phone_received_text": "请等待，正在请求回执码...",

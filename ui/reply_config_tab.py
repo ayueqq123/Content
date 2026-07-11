@@ -42,6 +42,11 @@ class ReplyConfigTab(QWidget):
         self.start_text.setMaximumHeight(100)
         form1.addRow("/start 回复:", self.start_text)
 
+        self.start_text_2 = QTextEdit()
+        self.start_text_2.setMaximumHeight(100)
+        self.start_text_2.setPlaceholderText("留空则不发第二条；填了会在上面那条之后再单独发一条(按钮挂在这条上)")
+        form1.addRow("/start 回复2:", self.start_text_2)
+
         self.start_no_response = QTextEdit()
         self.start_no_response.setMaximumHeight(60)
         form1.addRow("/start后无响应自动回复:", self.start_no_response)
@@ -181,6 +186,7 @@ class ReplyConfigTab(QWidget):
         self.phone_btn_text.setText(cfg.get("phone_button_text", ""))
         self.verify_btn_text.setText(cfg.get("verify_button_text", ""))
         self.start_text.setPlainText(cfg.get("start_text", ""))
+        self.start_text_2.setPlainText(cfg.get("start_text_2", ""))
         self.start_no_response.setPlainText(cfg.get("start_no_response_text", ""))
         self.default_reply.setPlainText(cfg.get("default_reply", ""))
         self.phone_received_text.setPlainText(cfg.get("phone_received_text", ""))
@@ -212,6 +218,7 @@ class ReplyConfigTab(QWidget):
             "phone_button_text": self.phone_btn_text.text().strip(),
             "verify_button_text": self.verify_btn_text.text().strip(),
             "start_text": self.start_text.toPlainText(),
+            "start_text_2": self.start_text_2.toPlainText(),
             "start_no_response_text": self.start_no_response.toPlainText(),
             "default_reply": self.default_reply.toPlainText(),
             "phone_received_text": self.phone_received_text.toPlainText(),
