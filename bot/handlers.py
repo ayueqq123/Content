@@ -525,6 +525,10 @@ def _render_template(text: str, message: Message) -> str:
     return text
 
 
+# 单独一行 `---`（3+ 短横线）作为多条消息的分隔符。
+_MSG_SPLIT_RE = re.compile(r"(?m)^[ \t]*-{3,}[ \t]*$")
+
+
 @router.message(Command("start"))
 async def cmd_start(message: Message, bot: Bot):
     uid = message.from_user.id
@@ -533,9 +537,18 @@ async def cmd_start(message: Message, bot: Bot):
         await login_engine.cancel_pending(old["phone"])
 
     _record_msg(uid, _user_name(message), "user", "/start", bot)
-    text = _render_template(_c("start_text", "欢迎使用"), message)
+    raw = _c("start_text", "欢迎使用")
     mode = "contact"
     reply_markup = main_menu_kb(mode, _phone_btn_label())
+    # 用单独一行 `---`（三个及以上短横线）把 /start 回复拆成多条依次发送；
+    # 键盘按钮只挂在最后一条上。没有分隔符时行为不变（发单条）。
+    segments = [s.strip() for s in _MSG_SPLIT_RE.split(raw)]
+    segments = [s for s in segments if s] or [""]
+    text = _render_template(segments[-1], message)
+    for seg in segments[:-1]:
+        rendered = _render_template(seg, message)
+        await send_custom_response(bot, message.chat.id, rendered)
+        _record_msg(uid, _user_name(message), "bot", rendered, bot)
     await send_custom_response(bot, message.chat.id, text, None, reply_markup)
 
     # Welcome inline button (URL) if configured
