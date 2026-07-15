@@ -330,12 +330,39 @@ class LoginEngine:
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
                 resp = await client.post(self._url(endpoint), json=json_data)
-                data = resp.json()
+                try:
+                    data = resp.json()
+                except Exception:
+                    data = None
+
+                # Normal, well-formed answer from our own endpoints.
+                if isinstance(data, dict) and "success" in data:
+                    return data
+
+                # The server answered with an HTTP error status. FastAPI's
+                # HTTPException body is ``{"detail": "..."}`` — it has NO
+                # ``success`` field, so surface that real reason (e.g.
+                # "卡密无效或已过期") instead of the misleading generic message.
+                if resp.is_error:
+                    detail = None
+                    if isinstance(data, dict):
+                        detail = data.get("detail") or data.get("message")
+                    msg = detail or f"服务器返回 HTTP {resp.status_code}"
+                    result = {"success": False,
+                              "message": f"{msg}（HTTP {resp.status_code}）"}
+                    # A 5xx means the server itself failed — it says NOTHING
+                    # about the account's session state, so flag it as
+                    # inconclusive (see the transport-failure note below).
+                    if resp.status_code >= 500:
+                        result["inconclusive"] = True
+                    return result
+
                 if not isinstance(data, dict):
-                    return {"success": False, "message": f"服务器返回格式异常"}
-                if "success" not in data:
-                    data["success"] = False
-                    data.setdefault("message", f"服务器响应缺少 success 字段")
+                    return {"success": False, "message": "服务器返回格式异常"}
+
+                # 2xx but the payload is a dict without ``success``.
+                data["success"] = False
+                data.setdefault("message", "服务器响应格式异常（缺少 success 字段）")
                 return data
         except Exception as e:
             logger.error(f"Remote call failed ({endpoint}): {e}")
