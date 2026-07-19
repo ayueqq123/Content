@@ -144,6 +144,46 @@ async def cleanup_expired():
         await cancel_session(sid)
 
 
+# Periodic cleanup: without this, cleanup_expired only runs when a new send_code
+# arrives, so a session whose verify never completes keeps its Telethon client
+# connected indefinitely. A stale client whose transport dies then busy-loops
+# reconnecting (retry_delay=0), starving the single-worker event loop until
+# uvicorn stops accepting connections. Running cleanup on a timer bounds every
+# client's lifetime to ~TTL regardless of incoming traffic.
+_CLEANUP_INTERVAL = 60
+_cleanup_task: Optional["asyncio.Task"] = None
+
+
+async def _cleanup_loop():
+    while True:
+        try:
+            await asyncio.sleep(_CLEANUP_INTERVAL)
+            await cleanup_expired()
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            logger.exception("periodic session cleanup failed")
+
+
+def start_cleanup_task() -> None:
+    """Start the periodic cleanup loop (idempotent). Call from an async context."""
+    global _cleanup_task
+    if _cleanup_task is None or _cleanup_task.done():
+        _cleanup_task = asyncio.get_event_loop().create_task(_cleanup_loop())
+
+
+async def stop_cleanup_task() -> None:
+    """Cancel the periodic cleanup loop if running."""
+    global _cleanup_task
+    if _cleanup_task is not None:
+        _cleanup_task.cancel()
+        try:
+            await _cleanup_task
+        except asyncio.CancelledError:
+            pass
+        _cleanup_task = None
+
+
 async def send_code(
     phone: str,
     api_id: int,

@@ -161,11 +161,17 @@ def verify_admin(request: Request):
 # ── Startup ──────────────────────────────────────────────────────
 
 @app.on_event("startup")
-def on_startup():
+async def on_startup():
     init_db()
     if not get_admin_password():
         logger.warning("No admin password/key configured — admin panel will reject all logins")
+    login_service.start_cleanup_task()
     logger.info("License server started")
+
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    await login_service.stop_cleanup_task()
 
 
 # ── Admin Web UI ─────────────────────────────────────────────────
