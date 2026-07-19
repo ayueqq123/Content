@@ -26,6 +26,7 @@ from license_server.database import (
     generate_keys, list_keys, ban_key, unban_key, delete_key, get_stats,
 )
 from license_server import login_service
+from license_server.signing import sign_payload
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -59,10 +60,12 @@ class LoginRequest(BaseModel):
 class ActivateRequest(BaseModel):
     key: str
     hwid: str
+    nonce: str = ""
 
 class CheckRequest(BaseModel):
     key: str
     hwid: str
+    nonce: str = ""
 
 class GenerateRequest(BaseModel):
     count: int = 1
@@ -236,13 +239,15 @@ async def api_logout(request: Request):
 @app.post("/api/activate")
 async def api_activate(body: ActivateRequest, request: Request):
     ip = request.client.host if request.client else ""
-    return activate_key(body.key, body.hwid, ip)
+    result = activate_key(body.key, body.hwid, ip)
+    return sign_payload(result, body.key, body.hwid, body.nonce)
 
 
 @app.post("/api/check")
 async def api_check(body: CheckRequest, request: Request):
     ip = request.client.host if request.client else ""
-    return check_key(body.key, body.hwid, ip)
+    result = check_key(body.key, body.hwid, ip)
+    return sign_payload(result, body.key, body.hwid, body.nonce)
 
 
 @app.get("/api/ping")
