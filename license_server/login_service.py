@@ -49,6 +49,14 @@ _CONNECT_RETRIES = 1   # attempts per candidate before moving to the next
 # client still sends the whole pool.
 _MAX_POOL_CANDIDATES = 5
 
+# Overall wall-clock budget for one check_session_valid call. Even with fail-fast
+# per candidate (8s each), a long candidate list (bound proxy + pool + direct)
+# could still exceed the desktop client's 30s HTTP timeout — the client would
+# then abort with an empty "网络请求失败" instead of getting our clean
+# "inconclusive" answer. Cap the total so we always reply (inconclusive) before
+# the client gives up. Kept comfortably under the client's 30s.
+_CHECK_TOTAL_BUDGET = 22
+
 # Per-session locks to prevent concurrent verify operations on the same session.
 # Without this, two identical verify_code / verify_2fa requests arriving in the
 # same event-loop tick can both read the session before either pops it, letting
@@ -427,11 +435,22 @@ async def check_session_valid(phone: str, api_id: int, api_hash: str,
     # proxy died and we fell back (``proxy_fell_back``) — the caller uses this
     # to warn the group.
     failed_proxy = ""
+    start = time.monotonic()
+    tried = 0
+    budget_exceeded = False
     for cand in candidates:
+        remaining = _CHECK_TOTAL_BUDGET - (time.monotonic() - start)
+        if remaining <= 0:
+            budget_exceeded = True
+            break
+        tried += 1
         client = _make_client(base_path, api_id, api_hash, cand)
         try:
             try:
-                await client.connect()
+                # Bound each connect by whichever is smaller: the per-attempt
+                # timeout or whatever budget remains, so one slow candidate can't
+                # blow the overall budget.
+                await asyncio.wait_for(client.connect(), timeout=max(1.0, remaining))
             except Exception as e:
                 # Could not reach Telegram through this egress (proxy down,
                 # network, DC unreachable). Try the next candidate before giving
@@ -506,11 +525,26 @@ async def check_session_valid(phone: str, api_id: int, api_hash: str,
             except Exception:
                 pass
 
-    # Every egress failed to even connect — say nothing about the session.
+    # Either every egress failed to connect, or we ran out of the time budget
+    # before exhausting them. Both say nothing about the session -> inconclusive.
+    if budget_exceeded:
+        logger.warning(
+            "check_session for %s: 连接超时预算 %ss 用尽（尝试 %d 个出口），返回未能确认",
+            phone, _CHECK_TOTAL_BUDGET, tried,
+        )
+        message = (
+            f"代理连接超时（{_CHECK_TOTAL_BUDGET}s 内尝试了 {tried} 个出口均连不上），"
+            "未能确认，请检查该账号的代理"
+        )
+    else:
+        message = (
+            f"无法连接 Telegram（尝试了 {tried} 个出口，代理与直连均失败），"
+            f"未能验证: {last_conn_err}"
+        )
     return {
         "success": False,
         "inconclusive": True,
-        "message": f"无法连接 Telegram（代理与直连均失败），未能验证: {last_conn_err}",
+        "message": message,
     }
 
 
