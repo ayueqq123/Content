@@ -36,6 +36,7 @@ _active_sessions: dict[str, dict] = {}
 
 # Auto-cleanup sessions older than 10 minutes
 _SESSION_TTL = 600
+_SEND_CODE_COOLDOWN = 60
 
 # Per-candidate connection tuning for the proxy-failover chain. Telethon's
 # defaults (connection_retries=5, timeout=10) let a single dead proxy block for
@@ -206,6 +207,25 @@ async def send_code(
 
     if api_id <= 0 or not api_hash:
         return {"success": False, "message": "API_ID/API_HASH 未配置"}
+
+    # Telegram may return FloodWait when the same phone is asked for another
+    # code before the previous one expires. Reuse the active request during a
+    # short cooldown instead of sending another code.
+    now = time.time()
+    for existing_sid, existing in list(_active_sessions.items()):
+        if (existing["phone"] != phone
+                or existing.get("license_key", "") != license_key):
+            continue
+        age = now - existing["created_at"]
+        if age < _SEND_CODE_COOLDOWN:
+            return {
+                "success": True,
+                "session_id": existing_sid,
+                "message": "验证码已发送，请使用刚收到的验证码",
+                "duplicate": True,
+                "retry_after": max(1, int(_SEND_CODE_COOLDOWN - age)),
+            }
+        await cancel_session(existing_sid)
 
     session_id = secrets.token_hex(16)
     sess_path = _session_path(session_id, phone, license_key)
