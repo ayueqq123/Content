@@ -381,11 +381,6 @@ class LoginEngine:
         if api_id <= 0 or not api_hash:
             return {"success": False, "message": "API_ID/API_HASH 未配置"}
 
-        # Cancel any existing session for this phone
-        old_sid = self._pending.pop(phone, None)
-        if old_sid:
-            await self._post(_EP_CANCEL, {"session_id": old_sid, "phone": phone, "license_key": self._license_key})
-
         result = await self._post(_EP_SEND_CODE, {
             "phone": phone,
             "api_id": api_id,
