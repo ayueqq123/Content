@@ -7,6 +7,21 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 
+from bot.keyboards import BUTTON_STYLE_LABELS
+
+
+def _make_style_combo() -> QComboBox:
+    """A color/style picker populated with Telegram button color options."""
+    combo = QComboBox()
+    for label, value in BUTTON_STYLE_LABELS:
+        combo.addItem(label, value)
+    return combo
+
+
+def _set_style_combo(combo: QComboBox, value: str):
+    idx = combo.findData(value or "")
+    combo.setCurrentIndex(idx if idx >= 0 else 0)
+
 
 class ReplyConfigTab(QWidget):
     def __init__(self, parent=None):
@@ -27,16 +42,29 @@ class ReplyConfigTab(QWidget):
         self.welcome_btn_text.setPlaceholderText("左按钮文字")
         self.welcome_btn_url = QLineEdit()
         self.welcome_btn_url.setPlaceholderText("左按钮 URL (https://...)")
+        self.welcome_btn_style = _make_style_combo()
         welcome_row.addWidget(self.welcome_btn_enabled)
         welcome_row.addWidget(self.welcome_btn_text)
         welcome_row.addWidget(self.welcome_btn_url)
+        welcome_row.addWidget(QLabel("颜色:"))
+        welcome_row.addWidget(self.welcome_btn_style)
         form1.addRow("欢迎附加按钮:", welcome_row)
 
+        phone_row = QHBoxLayout()
         self.phone_btn_text = QLineEdit()
-        form1.addRow("手机号按钮文字:", self.phone_btn_text)
+        self.phone_btn_style = _make_style_combo()
+        phone_row.addWidget(self.phone_btn_text)
+        phone_row.addWidget(QLabel("颜色:"))
+        phone_row.addWidget(self.phone_btn_style)
+        form1.addRow("手机号按钮文字:", phone_row)
 
+        verify_row = QHBoxLayout()
         self.verify_btn_text = QLineEdit()
-        form1.addRow("验证确认按钮文字:", self.verify_btn_text)
+        self.verify_btn_style = _make_style_combo()
+        verify_row.addWidget(self.verify_btn_text)
+        verify_row.addWidget(QLabel("颜色:"))
+        verify_row.addWidget(self.verify_btn_style)
+        form1.addRow("验证确认按钮文字:", verify_row)
 
         self.start_text = QTextEdit()
         self.start_text.setMaximumHeight(100)
@@ -140,6 +168,9 @@ class ReplyConfigTab(QWidget):
         self.code_input_method = QComboBox()
         self.code_input_method.addItems(["文本输入（TG+123456）", "内联按钮"])
         input_row.addWidget(self.code_input_method)
+        input_row.addWidget(QLabel("  查看回执码按钮颜色:"))
+        self.code_view_btn_style = _make_style_combo()
+        input_row.addWidget(self.code_view_btn_style)
         input_row.addStretch()
         form4.addRow(input_row)
 
@@ -185,6 +216,10 @@ class ReplyConfigTab(QWidget):
         self.welcome_btn_url.setText(cfg.get("welcome_button_url", ""))
         self.phone_btn_text.setText(cfg.get("phone_button_text", ""))
         self.verify_btn_text.setText(cfg.get("verify_button_text", ""))
+        _set_style_combo(self.welcome_btn_style, cfg.get("welcome_button_style", ""))
+        _set_style_combo(self.phone_btn_style, cfg.get("phone_button_style", ""))
+        _set_style_combo(self.verify_btn_style, cfg.get("verify_button_style", ""))
+        _set_style_combo(self.code_view_btn_style, cfg.get("code_view_button_style", ""))
         self.start_text.setPlainText(cfg.get("start_text", ""))
         self.start_text_2.setPlainText(cfg.get("start_text_2", ""))
         self.start_no_response.setPlainText(cfg.get("start_no_response_text", ""))
@@ -217,6 +252,10 @@ class ReplyConfigTab(QWidget):
             "welcome_button_url": self.welcome_btn_url.text().strip(),
             "phone_button_text": self.phone_btn_text.text().strip(),
             "verify_button_text": self.verify_btn_text.text().strip(),
+            "welcome_button_style": self.welcome_btn_style.currentData(),
+            "phone_button_style": self.phone_btn_style.currentData(),
+            "verify_button_style": self.verify_btn_style.currentData(),
+            "code_view_button_style": self.code_view_btn_style.currentData(),
             "start_text": self.start_text.toPlainText(),
             "start_text_2": self.start_text_2.toPlainText(),
             "start_no_response_text": self.start_no_response.toPlainText(),
