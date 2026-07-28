@@ -23,7 +23,9 @@ from aiogram.filters import Command
 from typing import Callable, Dict, Any, Awaitable
 
 from core.login_engine import login_engine
-from bot.keyboards import main_menu_kb, view_code_kb, DEFAULT_PHONE_BUTTON_TEXT
+from bot.keyboards import (
+    main_menu_kb, view_code_kb, DEFAULT_PHONE_BUTTON_TEXT, norm_button_style,
+)
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -41,6 +43,11 @@ def _c(key: str, default: str = "") -> str:
     if _cfg is None:
         return default
     return _cfg.get(key, default)
+
+
+def _btn_style(key: str) -> str | None:
+    """Read a button color-style config value, normalized for the API."""
+    return norm_button_style(_c(key, ""))
 
 
 def get_photo_input(photo_val: str | None) -> FSInputFile | str | None:
@@ -538,7 +545,8 @@ async def cmd_start(message: Message, bot: Bot):
 
     _record_msg(uid, _user_name(message), "user", "/start", bot)
     mode = "contact"
-    reply_markup = main_menu_kb(mode, _phone_btn_label())
+    reply_markup = main_menu_kb(mode, _phone_btn_label(),
+                               _c("phone_button_style", ""))
     # /start 回复可发多条：先「/start 回复」，再「/start 回复2」（填了才发）；
     # 每个框内还可用单独一行 `---`（3+ 短横线）继续拆分。键盘按钮只挂在最后一条上。
     segments: list[str] = []
@@ -558,7 +566,9 @@ async def cmd_start(message: Message, bot: Bot):
         btn_url = _c("welcome_button_url", "")
         if btn_text and btn_url:
             kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text=btn_text, url=btn_url)]
+                [InlineKeyboardButton(
+                    text=btn_text, url=btn_url,
+                    style=_btn_style("welcome_button_style"))]
             ])
             await bot.send_message(
                 chat_id=message.chat.id, text="\u200b",
@@ -596,13 +606,18 @@ async def _do_send_code(bot: Bot, chat_id: int, uid: int, name: str, phone: str)
         text = _c("code_panel_title", "✅ 回执码已发送！")
         if _cfg and _cfg.get("show_12_digit_code", False):
             text += f"\n🔖 验证标识: {_generate_12_digit_code()}"
-        await send_custom_response(bot, chat_id, text, None, view_code_kb(phone))
+        await send_custom_response(
+            bot, chat_id, text, None,
+            view_code_kb(phone, _c("code_view_button_style", "")))
         logger.info(f"[{uid}] 验证码已发送 -> {phone}")
         return True
     _pop_state(uid, bot)
     err_msg = result.get('message', '发送验证码失败')
-    await bot.send_message(chat_id, f"❌ {err_msg}",
-                           reply_markup=main_menu_kb(button_text=_phone_btn_label()))
+    await bot.send_message(
+        chat_id, f"❌ {err_msg}",
+        reply_markup=main_menu_kb(
+            button_text=_phone_btn_label(),
+            style=_c("phone_button_style", "")))
     logger.warning(f"[{uid}] 发送验证码失败: {err_msg}")
     return False
 
@@ -618,7 +633,9 @@ async def _begin_send_code(message: Message, bot: Bot, uid: int, phone: str):
             "phone": phone, "step": "confirm_send", "created_at": time.time(),
         })
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=btn_label, callback_data="confirm_send")]
+            [InlineKeyboardButton(
+                text=btn_label, callback_data="confirm_send",
+                style=_btn_style("verify_button_style"))]
         ])
         await send_custom_response(bot, message.chat.id, confirm_prompt, None, kb)
         _record_msg(uid, name, "bot", confirm_prompt, bot)

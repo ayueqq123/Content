@@ -40,6 +40,12 @@ _DEFAULTS: dict = {
     "welcome_button_url": "",
     "phone_button_text": "收复账户",
     "verify_button_text": "是否验证手机号",
+    # 按钮颜色（Telegram Bot API 的 KeyboardButton/InlineKeyboardButton `style`）。
+    # 取值："" 默认(应用自定) / "primary" 蓝 / "success" 绿 / "danger" 红。
+    "phone_button_style": "",
+    "welcome_button_style": "",
+    "verify_button_style": "",
+    "code_view_button_style": "",
     "start_text": (
         "⚠️<b>Telegram Account ban Manager</b>\n\n"
         "Warning! Your account has an abnormal situation and may be deactivated!\n"
