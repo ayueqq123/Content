@@ -317,6 +317,29 @@ class LoginEngine:
                         f"({len(self._phone_api)}/{len(self._api_pool)} 已分配)")
         return assigned
 
+    def _reassign_api(self, phone: str) -> tuple[int, str] | None:
+        """Remove the current API binding for *phone* and assign the next one
+        from the pool.  Returns the new (api_id, api_hash), or ``None`` if the
+        pool is exhausted (every credential has already been tried for this
+        phone in the current retry cycle).
+        """
+        if not self._api_pool or len(self._api_pool) <= 1:
+            return None
+        old = self._phone_api.pop(phone, None)
+        if self._api_pool:
+            new = self._api_pool[self._api_rr_index % len(self._api_pool)]
+            self._api_rr_index += 1
+            # Don't reassign the same credential we just failed with.
+            if old is not None and new == old and len(self._api_pool) > 1:
+                new = self._api_pool[self._api_rr_index % len(self._api_pool)]
+                self._api_rr_index += 1
+        else:
+            return None
+        self._phone_api[phone] = new
+        self._save_api_map()
+        logger.info(f"账号 {phone} API 限流回退: {old[0] if old else '?'} -> {new[0]}")
+        return new
+
     def set_server(self, server_url: str, license_key: str, hwid: str):
         """Set the remote server URL and credentials."""
         self._server_url = server_url.rstrip("/")
@@ -374,6 +397,19 @@ class LoginEngine:
             return {"success": False, "inconclusive": True,
                     "message": f"网络请求失败: {e}"}
 
+    # Error keywords that indicate the current API credential is flood-limited
+    # and a different one from the pool should be tried.
+    _API_FLOOD_KEYWORDS = ("登录尝试次数过多", "请求过于频繁", "FloodWait",
+                           "PhonePasswordFlood", "too many times")
+
+    def _is_api_flood(self, result: dict) -> bool:
+        """Return True if *result* indicates an API-level flood that may be
+        resolved by switching to a different api_id from the pool."""
+        if result.get("success"):
+            return False
+        msg = result.get("message", "")
+        return any(kw in msg for kw in self._API_FLOOD_KEYWORDS)
+
     async def send_code(self, phone: str) -> dict:
         if not self._server_url:
             return {"success": False, "message": "未配置远程登录服务器"}
@@ -391,6 +427,28 @@ class LoginEngine:
             "license_key": self._license_key,
             "hwid": self._hwid,
         })
+
+        # Auto-retry with a different API credential from the pool on flood.
+        if self._is_api_flood(result) and self._api_pool and len(self._api_pool) > 1:
+            max_retries = min(len(self._api_pool) - 1, 3)
+            for attempt in range(max_retries):
+                new_api = self._reassign_api(phone)
+                if new_api is None:
+                    break
+                logger.info(f"{phone} API 限流，第 {attempt + 1} 次回退重试 "
+                            f"API_ID={new_api[0]}")
+                result = await self._post(_EP_SEND_CODE, {
+                    "phone": phone,
+                    "api_id": new_api[0],
+                    "api_hash": new_api[1],
+                    "proxy": self._proxy_for(phone),
+                    "proxy_pool": self._proxy_alternates_for(phone),
+                    "device_model": self._device_model,
+                    "license_key": self._license_key,
+                    "hwid": self._hwid,
+                })
+                if not self._is_api_flood(result):
+                    break
 
         if result.get("success"):
             self._pending[phone] = result["session_id"]

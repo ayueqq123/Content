@@ -20,6 +20,7 @@ from telethon.errors import (
     PhoneCodeExpiredError,
     FloodWaitError,
     PhoneNumberInvalidError,
+    PhonePasswordFloodError,
     PasswordHashInvalidError,
     ApiIdInvalidError,
     UnauthorizedError,
@@ -307,6 +308,10 @@ async def send_code(
         await client.disconnect()
         _cleanup_session_files(sess_path)
         return {"success": False, "message": f"请求过于频繁，请等待 {e.seconds} 秒"}
+    except PhonePasswordFloodError:
+        await client.disconnect()
+        _cleanup_session_files(sess_path)
+        return {"success": False, "message": "该号码登录尝试次数过多，请稍后再试"}
     except Exception as e:
         logger.exception(f"send_code failed for {phone}")
         await client.disconnect()
