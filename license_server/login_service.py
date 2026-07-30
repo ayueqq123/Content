@@ -311,6 +311,12 @@ async def send_code(
             "api_id_invalid": True,
         }
     except FloodWaitError as e:
+        logger.warning(
+            "FloodWait on send_code: phone=%s api_id=%s wait_seconds=%s",
+            phone,
+            api_id,
+            e.seconds,
+        )
         await client.disconnect()
         _cleanup_session_files(sess_path)
         return {"success": False, "message": f"请求过于频繁，请等待 {e.seconds} 秒"}
