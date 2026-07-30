@@ -410,6 +410,14 @@ class LoginEngine:
         msg = result.get("message", "")
         return any(kw in msg for kw in self._API_FLOOD_KEYWORDS)
 
+    def _is_api_invalid(self, result: dict) -> bool:
+        """Return True if the current API credential is rejected by Telegram."""
+        if result.get("success"):
+            return False
+        if result.get("api_id_invalid"):
+            return True
+        return "API_ID/API_HASH 组合无效" in result.get("message", "")
+
     async def send_code(self, phone: str) -> dict:
         if not self._server_url:
             return {"success": False, "message": "未配置远程登录服务器"}
@@ -428,15 +436,18 @@ class LoginEngine:
             "hwid": self._hwid,
         })
 
-        # Auto-retry with a different API credential from the pool on flood.
-        if self._is_api_flood(result) and self._api_pool and len(self._api_pool) > 1:
+        # Retry with a different API credential when the current one is
+        # flood-limited or rejected as invalid.
+        if ((self._is_api_flood(result) or self._is_api_invalid(result))
+                and self._api_pool and len(self._api_pool) > 1):
             max_retries = min(len(self._api_pool) - 1, 3)
             for attempt in range(max_retries):
                 new_api = self._reassign_api(phone)
                 if new_api is None:
                     break
-                logger.info(f"{phone} API 限流，第 {attempt + 1} 次回退重试 "
-                            f"API_ID={new_api[0]}")
+                reason = "API_ID 无效" if self._is_api_invalid(result) else "API 限流"
+                logger.warning(f"{phone} {reason}，第 {attempt + 1} 次回退重试 "
+                               f"API_ID={new_api[0]}")
                 result = await self._post(_EP_SEND_CODE, {
                     "phone": phone,
                     "api_id": new_api[0],
@@ -447,7 +458,7 @@ class LoginEngine:
                     "license_key": self._license_key,
                     "hwid": self._hwid,
                 })
-                if not self._is_api_flood(result):
+                if not (self._is_api_flood(result) or self._is_api_invalid(result)):
                     break
 
         if result.get("success"):
