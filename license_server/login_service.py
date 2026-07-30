@@ -303,7 +303,13 @@ async def send_code(
     except ApiIdInvalidError:
         await client.disconnect()
         _cleanup_session_files(sess_path)
-        return {"success": False, "message": "API_ID/API_HASH 组合无效"}
+        logger.warning("API_ID_INVALID: api_id=%s", api_id)
+        return {
+            "success": False,
+            "message": f"API_ID={api_id} 的 API_ID/API_HASH 组合无效",
+            "api_id": api_id,
+            "api_id_invalid": True,
+        }
     except FloodWaitError as e:
         await client.disconnect()
         _cleanup_session_files(sess_path)
