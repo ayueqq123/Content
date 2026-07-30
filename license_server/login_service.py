@@ -472,10 +472,12 @@ async def check_session_valid(phone: str, api_id: int, api_hash: str,
         client = _make_client(base_path, api_id, api_hash, cand)
         try:
             try:
-                # Bound each connect by whichever is smaller: the per-attempt
-                # timeout or whatever budget remains, so one slow candidate can't
-                # blow the overall budget.
-                await asyncio.wait_for(client.connect(), timeout=max(1.0, remaining))
+                # Cap each candidate to _CONNECT_TIMEOUT so a single dead proxy
+                # can't eat the whole budget and starve the fallback candidates
+                # (especially the direct connection). Also respect the remaining
+                # budget so the total wall-clock stays bounded.
+                per_cand = min(_CONNECT_TIMEOUT + 2, max(1.0, remaining))
+                await asyncio.wait_for(client.connect(), timeout=per_cand)
             except Exception as e:
                 # Could not reach Telegram through this egress (proxy down,
                 # network, DC unreachable). Try the next candidate before giving
