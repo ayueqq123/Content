@@ -2,7 +2,6 @@ name: Build TGBot.exe
 
 on:
   push:
-    branches: [devin/1781349409-desktop-app]
     tags: ["v*"]
   workflow_dispatch:
     inputs:
@@ -19,11 +18,12 @@ permissions:
   contents: write
 
 jobs:
-  # ── Fast build (PyInstaller) — push to branch / workflow_dispatch ──
+  # ── Fast build (PyInstaller) — workflow_dispatch only ──
   build-fast:
     if: >-
       !startsWith(github.ref, 'refs/tags/') &&
-      (github.event_name != 'workflow_dispatch' || inputs.build_mode == 'pyinstaller')
+      github.event_name == 'workflow_dispatch' &&
+      inputs.build_mode == 'pyinstaller'
     runs-on: windows-latest
 
     steps:
