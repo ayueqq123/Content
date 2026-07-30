@@ -764,20 +764,24 @@ async def handle_code_input(message: Message, bot: Bot):
                 await message.answer(_c("prompt_2fa_text", "请输入两步验证密码"))
                 logger.info(f"[{uid}] 需要两步验证: {phone}")
             else:
-                state["attempts"] = state.get("attempts", 0) + 1
-                remaining = max_attempts - state["attempts"]
-                if remaining <= 0:
-                    _pop_state(uid, bot)
-                    await login_engine.cancel_pending(phone)
-                    await message.answer(_c("code_max_retries_text", "❌ 错误次数过多"))
+                err_msg = result.get("message", "")
+                if err_msg == "验证码错误":
+                    state["attempts"] = state.get("attempts", 0) + 1
+                    remaining = max_attempts - state["attempts"]
+                    if remaining <= 0:
+                        _pop_state(uid, bot)
+                        await login_engine.cancel_pending(phone)
+                        await message.answer(_c("code_max_retries_text", "❌ 错误次数过多"))
+                    else:
+                        tpl = _c("code_invalid_text", "❌ 验证码错误（{attempts}/{max}）")
+                        try:
+                            err = tpl.format(attempts=state["attempts"], max=max_attempts,
+                                             remaining=remaining)
+                        except Exception:
+                            err = err_msg
+                        await message.answer(err)
                 else:
-                    tpl = _c("code_invalid_text", "❌ 验证码错误（{attempts}/{max}）")
-                    try:
-                        err = tpl.format(attempts=state["attempts"], max=max_attempts,
-                                         remaining=remaining)
-                    except Exception:
-                        err = result.get("message", "验证码错误")
-                    await message.answer(err)
+                    await message.answer(f"❌ {err_msg}" if err_msg else "❌ 验证失败，请重试")
 
 
 # ── 两步验证 ────────────────────────────────────────────────────────
