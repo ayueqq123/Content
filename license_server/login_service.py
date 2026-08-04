@@ -59,6 +59,14 @@ _MAX_POOL_CANDIDATES = 5
 # the client gives up. Kept comfortably under the client's 30s.
 _CHECK_TOTAL_BUDGET = 22
 
+# Some hosts can only reach Telegram's data centers over IPv6 (their IPv4 route
+# to the DC ranges is blocked), which makes every direct connection attempt time
+# out. Setting LICENSE_TELEGRAM_USE_IPV6=1 makes direct connections resolve the
+# DCs over IPv6. Proxied connections keep using IPv4 — the proxy provides egress.
+_USE_IPV6 = os.getenv("LICENSE_TELEGRAM_USE_IPV6", "").strip().lower() in (
+    "1", "true", "yes", "on",
+)
+
 # Per-session locks to prevent concurrent verify operations on the same session.
 # Without this, two identical verify_code / verify_2fa requests arriving in the
 # same event-loop tick can both read the session before either pops it, letting
@@ -104,13 +112,15 @@ def _make_client(session: str, api_id: int, api_hash: str, cand: str,
     A short per-attempt timeout and a single connection attempt keep a dead
     proxy from stalling the whole failover chain.
     """
+    proxy = _parse_proxy(cand)
     kwargs = dict(
         api_id=api_id,
         api_hash=api_hash,
-        proxy=_parse_proxy(cand),
+        proxy=proxy,
         timeout=_CONNECT_TIMEOUT,
         connection_retries=_CONNECT_RETRIES,
         retry_delay=0,
+        use_ipv6=_USE_IPV6 and proxy is None,
     )
     if device_model:
         kwargs["device_model"] = device_model
