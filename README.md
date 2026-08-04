@@ -147,6 +147,10 @@ Session 的 auth_key 是登录时在服务端用「登录那次的 proxy」建�
 
 这样即使代理临时失效、或客户端本地改用了 Clash 等代理，校验也不会把好号判死。
 
+### 服务器 IPv4 到 Telegram 被封时
+
+若服务器到 Telegram DC 的 IPv4 被封（直连全部超时、日志出现「连接超时预算 22s 用尽」），但 IPv6 可用，在服务端设置 `LICENSE_TELEGRAM_USE_IPV6=1` 让**直连**走 IPv6（代理连接仍走 IPv4）。详见 `license_server/README.md`。
+
 ### 相关配置（登录成功配置 Tab）
 
 | 配置项 | 默认值 | 说明 |

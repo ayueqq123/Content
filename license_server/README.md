@@ -60,6 +60,8 @@ After=network.target
 Type=simple
 WorkingDirectory=/opt
 Environment=LICENSE_ADMIN_KEY=your-secret-admin-key-here
+# 服务器 IPv4 到 Telegram 被封时打开（直连走 IPv6）
+# Environment=LICENSE_TELEGRAM_USE_IPV6=1
 ExecStart=/usr/bin/python3 -m uvicorn license_server.server:app --host 0.0.0.0 --port 8900
 Restart=always
 
@@ -159,6 +161,16 @@ Session 的 auth_key 是登录时用「登录那次的 proxy」建立的，校�
 4. `<base>.proxy` 会随 session 文件一起被 `_cleanup_session_files` 清理。
 
 > 已在线的老号在本次改动前没有 `.proxy` 文件，校验会用「请求 proxy → 直连」兜底，同样不会误报。
+
+### IPv6 直连（服务器 IPv4 到 Telegram 被封时）
+
+部分 VPS 到 Telegram DC 的 IPv4 路由被封，直连会全部超时（`send_code` 失败、`check_session` 返回未能确认），但 IPv6 可用。此时设置环境变量让直连走 IPv6：
+
+```bash
+LICENSE_TELEGRAM_USE_IPV6=1
+```
+
+仅影响**直连**候选；走代理的连接仍用 IPv4（出口由代理提供）。可先对比 `bash -c '</dev/tcp/149.154.167.51/443'`（IPv4 DC）与 `bash -c '</dev/tcp/2001:b28:f23d:f001::a/443'`（IPv6 DC）确认是否属于这种情况。
 
 ## 卡密状态
 
