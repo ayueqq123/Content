@@ -51,6 +51,19 @@ _CONNECT_RETRIES = 1   # attempts per candidate before moving to the next
 # client still sends the whole pool.
 _MAX_POOL_CANDIDATES = 5
 
+# Overall wall-clock budget for one send_code call. Even with fail-fast
+# per candidate (8s each), a long candidate list (bound proxy + pool + direct)
+# could still exceed the desktop client's 90s HTTP timeout — the client would
+# then abort with an empty "网络请求失败" instead of getting our clean failure
+# reason. Keep this budget below 90s so we always reply before the client gives
+# up.
+_SEND_CODE_TOTAL_BUDGET = 60
+
+# Portion of the send_code budget reserved for the FINAL candidate (the direct
+# connection). Without this, a couple of dead proxies can consume the whole
+# budget and the direct fallback is never attempted.
+_SEND_CODE_DIRECT_RESERVE = 12
+
 # Overall wall-clock budget for one check_session_valid call. Even with fail-fast
 # per candidate (8s each), a long candidate list (bound proxy + pool + direct)
 # could still exceed the desktop client's 30s HTTP timeout — the client would
@@ -64,6 +77,13 @@ _CHECK_TOTAL_BUDGET = 22
 # whole budget and the direct fallback is never attempted, so every check on a
 # host with dead proxies returns "未能确认" even though direct would succeed.
 _DIRECT_RESERVE = 6
+
+# A proxy that repeatedly fails to connect is temporarily skipped for new
+# requests. Keeping this in process memory avoids repeatedly waiting on the same
+# dead proxy while allowing it to recover without a service restart.
+_PROXY_FAILURE_THRESHOLD = 3
+_PROXY_COOLDOWN = 300
+_proxy_health: dict[str, dict[str, float | int]] = {}
 
 # Some hosts can only reach Telegram's data centers over IPv6 (their IPv4 route
 # to the DC ranges is blocked), which makes every direct connection attempt time
@@ -171,6 +191,33 @@ def _build_candidates(*ordered: str, pool: Optional[list] = None) -> list[str]:
         if cand not in candidates:
             candidates.append(cand)
     return candidates
+
+
+def _proxy_is_cooling(proxy: str) -> bool:
+    if not proxy:
+        return False
+    record = _proxy_health.get(proxy)
+    return bool(record and record["cooldown_until"] > time.monotonic())
+
+
+def _record_proxy_failure(proxy: str) -> None:
+    if not proxy:
+        return
+    record = _proxy_health.setdefault(proxy, {"failures": 0, "cooldown_until": 0.0})
+    record["failures"] += 1
+    if record["failures"] >= _PROXY_FAILURE_THRESHOLD:
+        record["cooldown_until"] = time.monotonic() + _PROXY_COOLDOWN
+
+
+def _clear_proxy_failure(proxy: str) -> None:
+    if proxy:
+        _proxy_health.pop(proxy, None)
+
+
+def _filter_cooled_candidates(candidates: list[str]) -> list[str]:
+    filtered = [cand for cand in candidates
+                if not cand or not _proxy_is_cooling(cand)]
+    return filtered or [""]
 
 
 def _license_dir(license_key: str) -> str:
@@ -282,33 +329,63 @@ async def send_code(
     # switch to the next proxy (self-heal), and if none work we degrade to
     # direct and tell the caller (via ``proxy_fell_back``) so it can warn the
     # group. The proxy actually used is persisted for later health checks.
-    candidates = _build_candidates(proxy, pool=proxy_pool)
+    candidates = _filter_cooled_candidates(
+        _build_candidates(proxy, pool=proxy_pool))
 
     client: Optional[TelegramClient] = None
     used_proxy: str = ""
     last_conn_err = None
-    for cand in candidates:
+    start = time.monotonic()
+    tried = 0
+    budget_exceeded = False
+    for idx, cand in enumerate(candidates):
+        is_last = idx == len(candidates) - 1
+        remaining = _SEND_CODE_TOTAL_BUDGET - (time.monotonic() - start)
+        if not is_last and remaining <= _SEND_CODE_DIRECT_RESERVE:
+            continue
+        if remaining <= 0:
+            budget_exceeded = True
+            break
+        tried += 1
         c = _make_client(sess_path, api_id, api_hash, cand,
                          device_model=device_model or "Desktop Client")
         try:
-            await c.connect()
+            cap = remaining if is_last else remaining - _SEND_CODE_DIRECT_RESERVE
+            per_cand = min(_CONNECT_TIMEOUT + 2, max(1.0, cap))
+            await asyncio.wait_for(c.connect(), timeout=per_cand)
         except Exception as e:
             # This egress could not reach Telegram (proxy down / network).
             # Try the next candidate before giving up.
             last_conn_err = e
+            _record_proxy_failure(cand)
             try:
                 await c.disconnect()
             except Exception:
                 pass
             continue
+        _clear_proxy_failure(cand)
         client = c
         used_proxy = cand
         break
 
     if client is None:
         _cleanup_session_files(sess_path)
-        return {"success": False,
-                "message": f"无法连接 Telegram（代理与直连均失败）: {last_conn_err}"}
+        if budget_exceeded or time.monotonic() - start >= _SEND_CODE_TOTAL_BUDGET:
+            logger.warning(
+                "send_code for %s: 连接超时预算 %ss 用尽（尝试 %d 个出口）",
+                phone, _SEND_CODE_TOTAL_BUDGET, tried,
+            )
+            return {
+                "success": False,
+                "message": (
+                    f"代理连接超时（{_SEND_CODE_TOTAL_BUDGET}s 内尝试了 "
+                    f"{tried} 个出口），请检查代理配置后重试"
+                ),
+            }
+        return {
+            "success": False,
+            "message": f"无法连接 Telegram（代理与直连均失败）: {last_conn_err}",
+        }
 
     # A proxy was requested but every pooled proxy failed and we ended up on a
     # direct connection. (Switching to another pool proxy is a silent self-heal
@@ -320,7 +397,11 @@ async def send_code(
         # health check can reuse the SAME egress (and fall back to direct if the
         # proxy dies) instead of relying on the client to re-send it.
         _save_session_proxy(sess_path, used_proxy)
-        sent = await client.send_code_request(phone)
+        remaining = _SEND_CODE_TOTAL_BUDGET - (time.monotonic() - start)
+        if remaining <= 0:
+            raise asyncio.TimeoutError
+        sent = await asyncio.wait_for(
+            client.send_code_request(phone), timeout=remaining)
         _active_sessions[session_id] = {
             "client": client,
             "phone": phone,
@@ -369,6 +450,20 @@ async def send_code(
         await client.disconnect()
         _cleanup_session_files(sess_path)
         return {"success": False, "message": "该号码登录尝试次数过多，请稍后再试"}
+    except asyncio.TimeoutError:
+        await client.disconnect()
+        _cleanup_session_files(sess_path)
+        logger.warning(
+            "send_code for %s: 代理连接或 Telegram 请求超过 %ss 总预算",
+            phone, _SEND_CODE_TOTAL_BUDGET,
+        )
+        return {
+            "success": False,
+            "message": (
+                f"代理不可用或连接超时（超过 {_SEND_CODE_TOTAL_BUDGET}s 总预算），"
+                "请检查代理配置后重试"
+            ),
+        }
     except Exception as e:
         logger.exception(f"send_code failed for {phone}")
         await client.disconnect()
@@ -509,7 +604,8 @@ async def check_session_valid(phone: str, api_id: int, api_hash: str,
     # falling back to direct, instead of falsely reporting the session invalid.
     # A proxy value of "" means direct.
     login_proxy = _load_session_proxy(base_path)
-    candidates = _build_candidates(proxy, login_proxy, pool=proxy_pool)
+    candidates = _filter_cooled_candidates(
+        _build_candidates(proxy, login_proxy, pool=proxy_pool))
 
     last_conn_err = None
     # Remember any non-empty proxy that failed to connect, so that when the
@@ -546,9 +642,11 @@ async def check_session_valid(phone: str, api_id: int, api_hash: str,
                 # network, DC unreachable). Try the next candidate before giving
                 # up — a dead proxy must not look like an invalid session.
                 last_conn_err = e
+                _record_proxy_failure(cand)
                 if cand and not failed_proxy:
                     failed_proxy = cand
                 continue
+            _clear_proxy_failure(cand)
             # Probe with get_me() and classify the outcome by exception TYPE.
             # NOTE: do NOT use client.is_user_authorized() here — it swallows ANY
             # RPCError (e.g. transient FloodWait / server errors) and returns
