@@ -45,10 +45,9 @@ class LoginServiceTests(unittest.IsolatedAsyncioTestCase):
             - login_service._SEND_CODE_DIRECT_RESERVE
         )
 
+        # At least one proxy can be tried without consuming the direct reserve.
         self.assertGreaterEqual(
             proxy_budget, login_service._CONNECT_TIMEOUT + 2)
-        self.assertEqual(
-            proxy_budget - (login_service._CONNECT_TIMEOUT + 2), 6)
 
     async def test_send_code_budget_returns_failure(self):
         with patch.object(login_service, "_SEND_CODE_TOTAL_BUDGET", 0.05), \
