@@ -124,7 +124,36 @@ def _make_client(session: str, api_id: int, api_hash: str, cand: str,
     )
     if device_model:
         kwargs["device_model"] = device_model
-    return TelegramClient(session, **kwargs)
+    client = TelegramClient(session, **kwargs)
+    if kwargs["use_ipv6"]:
+        _remap_session_dc_to_ipv6(client)
+    return client
+
+
+# Telegram's per-DC IPv6 addresses. ``use_ipv6`` only affects the default DC
+# used by brand-new sessions; an existing session file stores the IPv4 address
+# of its home DC and Telethon connects to that stored address as-is. On hosts
+# where IPv4 to Telegram is blocked, those sessions would still time out, so
+# remap the stored address to the same DC's IPv6 address before connecting.
+_DC_IPV6 = {
+    1: "2001:b28:f23d:f001::a",
+    2: "2001:67c:4e8:f002::a",
+    3: "2001:b28:f23d:f003::a",
+    4: "2001:67c:4e8:f004::a",
+    5: "2001:b28:f23f:f005::a",
+}
+
+
+def _remap_session_dc_to_ipv6(client: "TelegramClient") -> None:
+    sess = client.session
+    dc_id = sess.dc_id
+    addr = sess.server_address
+    ipv6_addr = _DC_IPV6.get(dc_id)
+    if not addr or ":" in addr or not ipv6_addr:
+        return  # no stored DC, already IPv6, or unknown DC
+    # SQLiteSession.set_dc re-reads the auth_key for the (unchanged) DC row,
+    # so the session's authorization is preserved across the address swap.
+    sess.set_dc(dc_id, ipv6_addr, sess.port or 443)
 
 
 def _build_candidates(*ordered: str, pool: Optional[list] = None) -> list[str]:
