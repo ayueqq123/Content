@@ -349,7 +349,7 @@ class LoginEngine:
     def _url(self, endpoint: str) -> str:
         return self._server_url + endpoint
 
-    async def _post(self, endpoint: str, json_data: dict, timeout: int = 30) -> dict:
+    async def _post(self, endpoint: str, json_data: dict, timeout: int = 90) -> dict:
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
                 resp = await client.post(self._url(endpoint), json=json_data)
@@ -584,7 +584,7 @@ class LoginEngine:
             "proxy_pool": self._proxy_alternates_for(phone),
             "license_key": self._license_key,
             "hwid": self._hwid,
-        }, timeout=30)
+        }, timeout=90)
         return result
 
     async def cancel_pending(self, phone: str):
