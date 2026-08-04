@@ -20,6 +20,30 @@ logger = logging.getLogger(__name__)
 _dp = Dispatcher()
 _dp.include_router(router)
 
+_NETWORK_HINT = (
+    "无法连接 api.telegram.org（网络被拦截或代理不可用）"
+    "— 请在「代理设置」填写单个代理，或在「代理文件 / 代理池」中提供可用代理"
+)
+
+
+def _bot_proxy_url(index: int, proxy: str, proxy_list: list[str]) -> str:
+    """Pick the proxy for the bot at ``index``.
+
+    The single ``proxy`` field applies to every bot; otherwise bots are spread
+    round-robin over the proxy pool (file + manual entries).
+    """
+    if proxy:
+        return proxy_to_url(proxy)
+    if proxy_list:
+        return proxy_to_url(proxy_list[index % len(proxy_list)])
+    return ""
+
+
+def _is_network_error(err: Exception) -> bool:
+    text = str(err).lower()
+    return ("cannot connect to host" in text or "connection" in text
+            or "timeout" in text or "timed out" in text)
+
 
 class BotInstance:
     """Represents a single running bot."""
@@ -139,10 +163,11 @@ class BotRunner:
         # Give handlers access to config
         set_config(cfg)
 
-        proxy_url = proxy_to_url(proxy)
         errors = []
 
         for i, token in enumerate(tokens):
+            bot = None
+            proxy_url = _bot_proxy_url(i, proxy, proxy_list)
             try:
                 session = AiohttpSession(proxy=proxy_url) if proxy_url else None
                 bot = Bot(token=token, session=session)
@@ -151,7 +176,7 @@ class BotRunner:
                 me = await bot.get_me()
                 bot._me = me
                 label = f"@{me.username}" if me.username else f"Bot#{i+1}"
-                logger.info(f"Bot 已连接: {label}")
+                logger.info(f"Bot 已连接: {label} (代理: {proxy_url or '直连'})")
 
                 try:
                     await bot.delete_webhook(drop_pending_updates=True)
@@ -190,9 +215,17 @@ class BotRunner:
                 short_token = token[:8] + "..."
                 if "unauthorized" in err_msg.lower():
                     errors.append(f"Token {short_token} 无效 (Unauthorized)")
+                elif _is_network_error(e):
+                    via = f"（当前代理: {proxy_url}）" if proxy_url else "（当前未使用代理）"
+                    errors.append(f"Token {short_token} 启动失败: {_NETWORK_HINT}{via}")
                 else:
                     errors.append(f"Token {short_token} 启动失败: {err_msg}")
                 logger.error(f"Bot token {short_token} failed: {err_msg}")
+                if bot is not None:
+                    try:
+                        await bot.session.close()
+                    except Exception:
+                        pass
 
         if not self._instances:
             return "所有 Bot 启动失败:\n" + "\n".join(errors)
