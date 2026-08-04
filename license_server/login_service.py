@@ -53,16 +53,17 @@ _MAX_POOL_CANDIDATES = 5
 
 # Overall wall-clock budget for one send_code call. Even with fail-fast
 # per candidate (8s each), a long candidate list (bound proxy + pool + direct)
-# could still exceed the desktop client's 90s HTTP timeout — the client would
-# then abort with an empty "网络请求失败" instead of getting our clean failure
-# reason. Keep this budget below 90s so we always reply before the client gives
-# up.
-_SEND_CODE_TOTAL_BUDGET = 60
+# could still exceed the desktop client's timeout. The currently deployed
+# desktop client hard-codes a 30s timeout, so this budget must stay below 30s
+# to return a useful failure before the client disconnects. Newer clients use
+# 90s, which provides extra transport headroom but cannot be relied on here.
+_SEND_CODE_TOTAL_BUDGET = 22
 
 # Portion of the send_code budget reserved for the FINAL candidate (the direct
-# connection). Without this, a couple of dead proxies can consume the whole
-# budget and the direct fallback is never attempted.
-_SEND_CODE_DIRECT_RESERVE = 12
+# connection). Without this, dead proxies can consume the whole budget and the
+# direct fallback is never attempted. With a 22s total budget, this leaves 16s
+# for proxy candidates before the final direct attempt.
+_SEND_CODE_DIRECT_RESERVE = 6
 
 # Overall wall-clock budget for one check_session_valid call. Even with fail-fast
 # per candidate (8s each), a long candidate list (bound proxy + pool + direct)
