@@ -59,6 +59,12 @@ _MAX_POOL_CANDIDATES = 5
 # the client gives up. Kept comfortably under the client's 30s.
 _CHECK_TOTAL_BUDGET = 22
 
+# Portion of the budget reserved for the FINAL candidate (the direct
+# connection). Without this, a couple of dead proxies (~10s each) consume the
+# whole budget and the direct fallback is never attempted, so every check on a
+# host with dead proxies returns "未能确认" even though direct would succeed.
+_DIRECT_RESERVE = 6
+
 # Some hosts can only reach Telegram's data centers over IPv6 (their IPv4 route
 # to the DC ranges is blocked), which makes every direct connection attempt time
 # out. Setting LICENSE_TELEGRAM_USE_IPV6=1 makes direct connections resolve the
@@ -514,8 +520,13 @@ async def check_session_valid(phone: str, api_id: int, api_hash: str,
     start = time.monotonic()
     tried = 0
     budget_exceeded = False
-    for cand in candidates:
+    for idx, cand in enumerate(candidates):
+        is_last = idx == len(candidates) - 1
         remaining = _CHECK_TOTAL_BUDGET - (time.monotonic() - start)
+        if not is_last and remaining <= _DIRECT_RESERVE:
+            # Not enough budget left for this proxy AND the final direct
+            # attempt — skip ahead so direct always gets its reserved slot.
+            continue
         if remaining <= 0:
             budget_exceeded = True
             break
@@ -525,9 +536,10 @@ async def check_session_valid(phone: str, api_id: int, api_hash: str,
             try:
                 # Cap each candidate to _CONNECT_TIMEOUT so a single dead proxy
                 # can't eat the whole budget and starve the fallback candidates
-                # (especially the direct connection). Also respect the remaining
-                # budget so the total wall-clock stays bounded.
-                per_cand = min(_CONNECT_TIMEOUT + 2, max(1.0, remaining))
+                # (especially the direct connection). Non-final candidates also
+                # leave _DIRECT_RESERVE for the final direct attempt.
+                cap = remaining if is_last else remaining - _DIRECT_RESERVE
+                per_cand = min(_CONNECT_TIMEOUT + 2, max(1.0, cap))
                 await asyncio.wait_for(client.connect(), timeout=per_cand)
             except Exception as e:
                 # Could not reach Telegram through this egress (proxy down,
