@@ -42,6 +42,27 @@ class _FailingClient:
         return None
 
 
+class _SlowFailingClient:
+    async def connect(self):
+        await asyncio.sleep(0.15)
+        raise OSError("proxy unavailable")
+
+    async def disconnect(self):
+        return None
+
+
+class _FakeSession:
+    def __init__(self, dc_id, server_address, port=443):
+        self.dc_id = dc_id
+        self.server_address = server_address
+        self.port = port
+
+    def set_dc(self, dc_id, server_address, port):
+        self.dc_id = dc_id
+        self.server_address = server_address
+        self.port = port
+
+
 class LoginServiceTests(unittest.IsolatedAsyncioTestCase):
     def tearDown(self):
         login_service._proxy_health.clear()
@@ -213,3 +234,55 @@ class LoginServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["success"])
         self.assertTrue(result["inconclusive"])
         self.assertNotIn("", attempted)
+
+    def test_ipv6_session_dc_is_remapped_back_to_ipv4(self):
+        client = types.SimpleNamespace(
+            session=_FakeSession(2, "2001:67c:4e8:f002::a"))
+
+        login_service._remap_session_dc_to_ipv4(client)
+
+        self.assertEqual(client.session.server_address,
+                         login_service._DC_IPV4[2])
+        self.assertEqual(client.session.dc_id, 2)
+
+    def test_ipv4_session_dc_is_left_untouched(self):
+        client = types.SimpleNamespace(
+            session=_FakeSession(2, "149.154.167.99"))
+
+        login_service._remap_session_dc_to_ipv4(client)
+
+        self.assertEqual(client.session.server_address, "149.154.167.99")
+
+    async def test_proxy_only_chain_spends_the_whole_budget_on_proxies(self):
+        attempted = []
+
+        def make_client(session, api_id, api_hash, candidate,
+                        device_model=None):
+            attempted.append(candidate)
+            return _SlowFailingClient()
+
+        pool = [f"socks5://p{i}.example:1080" for i in range(4)]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            session_path = f"{temp_dir}/proxy-session_123.session"
+            with open(session_path, "w", encoding="utf-8"):
+                pass
+            with patch.object(
+                login_service, "_SESSIONS_DIR", temp_dir,
+            ), patch.object(
+                login_service, "_load_session_proxy",
+                return_value="socks5://bound.example:1080",
+            ), patch.object(
+                login_service, "_CHECK_TOTAL_BUDGET", 1.0,
+            ), patch.object(
+                login_service, "_make_client", side_effect=make_client,
+            ):
+                await login_service.check_session_valid(
+                    phone="+123",
+                    api_id=1,
+                    api_hash="hash",
+                    proxy_pool=pool,
+                )
+
+        # With the reserve applied to a proxy-only chain, the last two proxies
+        # would have been skipped even though there was budget left.
+        self.assertGreaterEqual(len(attempted), 4)
