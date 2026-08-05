@@ -120,6 +120,7 @@ class CheckSessionRequest(BaseModel):
     proxy_pool: list[str] = []
     license_key: str = ""
     hwid: str = ""
+    client_timeout: Any = None
 
 
 # ── Auth helpers (reuse daohao login) ────────────────────────────
@@ -328,6 +329,7 @@ async def api_login_check_session(body: CheckSessionRequest):
         proxy=body.proxy,
         proxy_pool=body.proxy_pool,
         license_key=body.license_key,
+        client_timeout=body.client_timeout,
     )
 
 

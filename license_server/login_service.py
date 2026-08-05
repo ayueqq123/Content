@@ -46,35 +46,29 @@ _SEND_CODE_COOLDOWN = 60
 # send_code / check_session into multi-minute stalls. We fail fast on each
 # candidate and rely on the ordered list (bound proxy -> a few pool alternates
 # -> direct) for resilience.
-# A healthy proxy completes the CONNECT/SOCKS handshake plus the MTProto
-# handshake in ~2s, so 5s is generous while letting the fixed request budget
-# cover more egresses: a 22s budget reaches 3 candidates instead of 2.
-_CONNECT_TIMEOUT = 5   # seconds per connection attempt
+# Measured on the production host (40 healthy proxies, 10 concurrent, on top of
+# the live traffic): a full connect through the proxy takes p50 8.1s, p90 15.0s,
+# max 18.6s. A short per-attempt timeout therefore fails healthy proxies, and
+# two 8s attempts are worse than one long one — the retry hits the same loaded
+# gateway. Give each candidate enough time to actually finish.
+_CONNECT_TIMEOUT = 12   # seconds per connection attempt
 _CONNECT_RETRIES = 1   # attempts per candidate before moving to the next
 # Cap how many pooled alternates we actually try, as defense-in-depth in case a
 # client still sends the whole pool.
 _MAX_POOL_CANDIDATES = 8
 
 # The server budget must remain below the client's HTTP timeout so a bounded
-# failure reaches the caller before the client disconnects. The currently
-# deployed desktop client hard-codes 30s and does not report a timeout, so old
-# or invalid requests use a 22s fallback. Newer clients report their timeout:
-# a 90s client gets min(60, 90 - 5) = 60s, with 5s reserved for TLS
-# handshakes, nginx forwarding, and response transmission.
+# failure reaches the caller before the client disconnects. Clients that do not
+# report a timeout are assumed to use the old hard-coded 30s and get a 22s
+# fallback. Clients that report their timeout get an adaptive budget: a 90s
+# client gets min(60, 90 - 5) = 60s, with 5s reserved for TLS handshakes, nginx
+# forwarding, and response transmission. Applies to send_code and check_session.
 _SEND_CODE_DEFAULT_BUDGET = 22
 _SEND_CODE_MAX_BUDGET = 60
 _SEND_CODE_CLIENT_SAFETY_MARGIN = 5
 _SEND_CODE_MAX_REPORTED_TIMEOUT = 300
 _SEND_CODE_DEFAULT_DIRECT_RESERVE = 6
 _SEND_CODE_MAX_DIRECT_RESERVE = 12
-
-# Overall wall-clock budget for one check_session_valid call. Even with fail-fast
-# per candidate, a long candidate list (bound proxy + pool + direct)
-# could still exceed the desktop client's 30s HTTP timeout — the client would
-# then abort with an empty "网络请求失败" instead of getting our clean
-# "inconclusive" answer. Cap the total so we always reply (inconclusive) before
-# the client gives up. Kept comfortably under the client's 30s.
-_CHECK_TOTAL_BUDGET = 22
 
 # Portion of the budget reserved for the FINAL candidate (normally the direct
 # connection). Without this, a couple of dead proxies consume the whole budget
@@ -237,8 +231,8 @@ def _build_candidates(*ordered: str, pool: Optional[list] = None,
     return candidates
 
 
-def _send_code_budget(client_timeout) -> tuple[float, float]:
-    """Return the request budget and direct reserve for one send_code call.
+def _request_budget(client_timeout) -> tuple[float, float]:
+    """Return the request budget and direct reserve for one login request.
 
     Older clients do not report their timeout and still use a hard-coded 30s
     HTTP timeout, so they use the conservative 22s budget. Newer clients can
@@ -395,7 +389,7 @@ async def send_code(
 ) -> dict:
     """Create a Telethon client and send verification code."""
     await cleanup_expired()
-    total_budget, direct_reserve = _send_code_budget(client_timeout)
+    total_budget, direct_reserve = _request_budget(client_timeout)
 
     if api_id <= 0 or not api_hash:
         return {"success": False, "message": "API_ID/API_HASH 未配置"}
@@ -677,7 +671,8 @@ async def verify_2fa(session_id: str, phone: str, password: str) -> dict:
 
 async def check_session_valid(phone: str, api_id: int, api_hash: str,
                               proxy: str = "", proxy_pool: Optional[list] = None,
-                              license_key: str = "") -> dict:
+                              license_key: str = "",
+                              client_timeout=None) -> dict:
     """Check if a session for the given phone is still authorized on Telegram.
 
     Finds the session file under the license_key directory and tries to connect.
@@ -733,13 +728,14 @@ async def check_session_valid(phone: str, api_id: int, api_hash: str,
     start = time.monotonic()
     tried = 0
     budget_exceeded = False
+    total_budget, _ = _request_budget(client_timeout)
     # The reserve exists to guarantee the direct fallback a slot. A proxy-only
     # chain has nothing to protect, so reserving there just throws away budget
     # that could have tried another proxy.
     reserve = _DIRECT_RESERVE if candidates and candidates[-1] == "" else 0
     for idx, cand in enumerate(candidates):
         is_last = idx == len(candidates) - 1
-        remaining = _CHECK_TOTAL_BUDGET - (time.monotonic() - start)
+        remaining = total_budget - (time.monotonic() - start)
         if not is_last and remaining <= reserve:
             # Not enough budget left for this proxy AND the final direct
             # attempt — skip ahead so direct always gets its reserved slot.
@@ -839,10 +835,10 @@ async def check_session_valid(phone: str, api_id: int, api_hash: str,
     if budget_exceeded:
         logger.warning(
             "check_session for %s: 连接超时预算 %ss 用尽（尝试 %d 个出口），返回未能确认",
-            phone, _CHECK_TOTAL_BUDGET, tried,
+            phone, total_budget, tried,
         )
         message = (
-            f"代理连接超时（{_CHECK_TOTAL_BUDGET}s 内尝试了 {tried} 个出口均连不上），"
+            f"代理连接超时（{total_budget}s 内尝试了 {tried} 个出口均连不上），"
             "未能确认，请检查该账号的代理"
         )
     else:
