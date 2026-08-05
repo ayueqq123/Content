@@ -1,4 +1,7 @@
 import asyncio
+import sys
+import tempfile
+import types
 import time
 import unittest
 from unittest.mock import AsyncMock, patch
@@ -14,6 +17,31 @@ class _SlowClient:
         return None
 
 
+class _TdataSlowClient:
+    disconnected = False
+
+    def __init__(self, *args, **kwargs):
+        self.session = types.SimpleNamespace(
+            dc_id=2,
+            server_address="127.0.0.1",
+            port=443,
+        )
+
+    async def connect(self):
+        await asyncio.sleep(1)
+
+    async def disconnect(self):
+        self.disconnected = True
+
+
+class _FailingClient:
+    async def connect(self):
+        raise OSError("proxy unavailable")
+
+    async def disconnect(self):
+        return None
+
+
 class LoginServiceTests(unittest.IsolatedAsyncioTestCase):
     def tearDown(self):
         login_service._proxy_health.clear()
@@ -22,6 +50,7 @@ class LoginServiceTests(unittest.IsolatedAsyncioTestCase):
         login_service._proxy_health["bad"] = {
             "failures": login_service._PROXY_FAILURE_THRESHOLD,
             "cooldown_until": time.monotonic() + 60,
+            "last_failure_at": time.monotonic(),
         }
 
         candidates = login_service._filter_cooled_candidates(
@@ -32,12 +61,38 @@ class LoginServiceTests(unittest.IsolatedAsyncioTestCase):
         login_service._proxy_health["alternate"] = {
             "failures": login_service._PROXY_FAILURE_THRESHOLD,
             "cooldown_until": time.monotonic() + 60,
+            "last_failure_at": time.monotonic(),
         }
         self.assertEqual(
             login_service._filter_cooled_candidates(
                 login_service._build_candidates("bad", pool=["alternate"])),
+            ["bad", "alternate", ""],
+        )
+
+    def test_proxy_configuration_excludes_direct_candidate(self):
+        self.assertEqual(
+            login_service._build_candidates(
+                "bound", pool=["alternate"], include_direct=False),
+            ["bound", "alternate"],
+        )
+        self.assertEqual(
+            login_service._build_candidates(
+                "", pool=None, include_direct=True),
             [""],
         )
+
+    def test_proxy_failure_cooling_threshold_and_decay(self):
+        for _ in range(login_service._PROXY_FAILURE_THRESHOLD - 1):
+            login_service._record_proxy_failure("bad")
+        self.assertFalse(login_service._proxy_is_cooling("bad"))
+        login_service._record_proxy_failure("bad")
+        self.assertTrue(login_service._proxy_is_cooling("bad"))
+
+        login_service._proxy_health["bad"]["last_failure_at"] = (
+            time.monotonic() - login_service._PROXY_FAILURE_DECAY_WINDOW - 1
+        )
+        self.assertFalse(login_service._proxy_is_cooling("bad"))
+        self.assertNotIn("bad", login_service._proxy_health)
 
     def test_send_code_budget_uses_reported_timeout(self):
         self.assertEqual(login_service._send_code_budget(90), (60, 12))
@@ -88,4 +143,73 @@ class LoginServiceTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertFalse(result["success"])
-        self.assertIn("代理连接超时", result["message"])
+        self.assertIn("所有代理均不可用", result["message"])
+        self.assertIn("裸 IP", result["message"])
+
+    async def test_tdata_conversion_timeout_returns_none(self):
+        fake_td = types.ModuleType("opentele.td")
+        fake_td.TDesktop = object
+        fake_tl = types.ModuleType("opentele.tl")
+        fake_tl.TelegramClient = _TdataSlowClient
+        fake_api = types.ModuleType("opentele.api")
+        fake_api.UseCurrentSession = object()
+        fake_root = types.ModuleType("opentele")
+        fake_root.__path__ = []
+
+        with patch.dict(
+            sys.modules,
+            {
+                "opentele": fake_root,
+                "opentele.td": fake_td,
+                "opentele.tl": fake_tl,
+                "opentele.api": fake_api,
+            },
+        ), patch.object(
+            login_service,
+            "get_session_file_path",
+            return_value="/tmp/test-tdata.session",
+        ), patch.object(
+            login_service,
+            "_TDATA_TOTAL_TIMEOUT",
+            0.05,
+        ):
+            result = await login_service.get_tdata_zip_path(
+                "session", "+123", "")
+
+        self.assertIsNone(result)
+
+    async def test_check_session_proxy_session_never_tries_direct(self):
+        attempted = []
+
+        def make_client(session, api_id, api_hash, candidate,
+                        device_model=None):
+            attempted.append(candidate)
+            return _FailingClient()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            session_path = f"{temp_dir}/proxy-session_123.session"
+            with open(session_path, "w", encoding="utf-8"):
+                pass
+            with patch.object(
+                login_service,
+                "_SESSIONS_DIR",
+                temp_dir,
+            ), patch.object(
+                login_service,
+                "_load_session_proxy",
+                return_value="socks5://proxy.example:1080",
+            ), patch.object(
+                login_service,
+                "_make_client",
+                side_effect=make_client,
+            ):
+                result = await login_service.check_session_valid(
+                    phone="+123",
+                    api_id=1,
+                    api_hash="hash",
+                    proxy="socks5://request.example:1080",
+                )
+
+        self.assertFalse(result["success"])
+        self.assertTrue(result["inconclusive"])
+        self.assertNotIn("", attempted)
