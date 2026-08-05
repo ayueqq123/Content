@@ -46,16 +46,23 @@ _SEND_CODE_COOLDOWN = 60
 # send_code / check_session into multi-minute stalls. We fail fast on each
 # candidate and rely on the ordered list (bound proxy -> a few pool alternates
 # -> direct) for resilience.
-# Measured on the production host (40 healthy proxies, 10 concurrent, on top of
-# the live traffic): a full connect through the proxy takes p50 8.1s, p90 15.0s,
-# max 18.6s. A short per-attempt timeout therefore fails healthy proxies, and
-# two 8s attempts are worse than one long one — the retry hits the same loaded
-# gateway. Give each candidate enough time to actually finish.
-_CONNECT_TIMEOUT = 12   # seconds per connection attempt
+_CONNECT_TIMEOUT = 8   # seconds per connection attempt
 _CONNECT_RETRIES = 1   # attempts per candidate before moving to the next
-# Cap how many pooled alternates we actually try, as defense-in-depth in case a
-# client still sends the whole pool.
-_MAX_POOL_CANDIDATES = 8
+# Cap how many pooled alternates we actually try. This is a load limit, not just
+# defense-in-depth: every attempt opens another connection through the same
+# proxy gateway, and the gateway congests. Measured on production (~2000
+# check_session/hour, one Oxylabs account) over 8-minute windows:
+#
+#   candidates=8, timeout=12  -> 3-4 attempts/request, 95% inconclusive
+#   candidates=8, timeout=8   -> 3 attempts/request,   71% inconclusive
+#   candidates=1, timeout=8   -> 2 attempts/request,    0% inconclusive
+#
+# A proxy handshake takes 0.2-1.2s when connections are made sequentially but
+# p50 8s / p90 15s at concurrency 10, so raising the attempt count feeds a
+# congestion collapse: slower connects hold more sockets open, which slows
+# connects further. Keep the chain short and let the retry (still 122 connect
+# timeouts in the passing window) absorb individual bad egresses.
+_MAX_POOL_CANDIDATES = 1
 
 # The server budget must remain below the client's HTTP timeout so a bounded
 # failure reaches the caller before the client disconnects. Clients that do not
