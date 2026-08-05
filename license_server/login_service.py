@@ -10,6 +10,7 @@ import os
 import asyncio
 import secrets
 import time
+import math
 import logging
 from typing import Optional
 
@@ -51,18 +52,18 @@ _CONNECT_RETRIES = 1   # attempts per candidate before moving to the next
 # client still sends the whole pool.
 _MAX_POOL_CANDIDATES = 5
 
-# Overall wall-clock budget for one send_code call. Even with fail-fast
-# per candidate (8s each), a long candidate list (bound proxy + pool + direct)
-# could still exceed the desktop client's 90s HTTP timeout — the client would
-# then abort with an empty "网络请求失败" instead of getting our clean failure
-# reason. Keep this budget below 90s so we always reply before the client gives
-# up.
-_SEND_CODE_TOTAL_BUDGET = 60
-
-# Portion of the send_code budget reserved for the FINAL candidate (the direct
-# connection). Without this, a couple of dead proxies can consume the whole
-# budget and the direct fallback is never attempted.
-_SEND_CODE_DIRECT_RESERVE = 12
+# The server budget must remain below the client's HTTP timeout so a bounded
+# failure reaches the caller before the client disconnects. The currently
+# deployed desktop client hard-codes 30s and does not report a timeout, so old
+# or invalid requests use a 22s fallback. Newer clients report their timeout:
+# a 90s client gets min(60, 90 - 5) = 60s, with 5s reserved for TLS
+# handshakes, nginx forwarding, and response transmission.
+_SEND_CODE_DEFAULT_BUDGET = 22
+_SEND_CODE_MAX_BUDGET = 60
+_SEND_CODE_CLIENT_SAFETY_MARGIN = 5
+_SEND_CODE_MAX_REPORTED_TIMEOUT = 300
+_SEND_CODE_DEFAULT_DIRECT_RESERVE = 6
+_SEND_CODE_MAX_DIRECT_RESERVE = 12
 
 # Overall wall-clock budget for one check_session_valid call. Even with fail-fast
 # per candidate (8s each), a long candidate list (bound proxy + pool + direct)
@@ -193,6 +194,41 @@ def _build_candidates(*ordered: str, pool: Optional[list] = None) -> list[str]:
     return candidates
 
 
+def _send_code_budget(client_timeout) -> tuple[float, float]:
+    """Return the request budget and direct reserve for one send_code call.
+
+    Older clients do not report their timeout and still use a hard-coded 30s
+    HTTP timeout, so they use the conservative 22s budget. Newer clients can
+    use up to 60s while retaining time for transport overhead.
+    """
+    if client_timeout is None:
+        return _SEND_CODE_DEFAULT_BUDGET, _SEND_CODE_DEFAULT_DIRECT_RESERVE
+    if (isinstance(client_timeout, bool)
+            or not isinstance(client_timeout, (int, float))
+            or not math.isfinite(client_timeout)
+            or client_timeout <= 0
+            or client_timeout > _SEND_CODE_MAX_REPORTED_TIMEOUT):
+        return _SEND_CODE_DEFAULT_BUDGET, _SEND_CODE_DEFAULT_DIRECT_RESERVE
+
+    budget = min(
+        _SEND_CODE_MAX_BUDGET,
+        client_timeout - _SEND_CODE_CLIENT_SAFETY_MARGIN,
+    )
+    if budget <= 0:
+        return _SEND_CODE_DEFAULT_BUDGET, _SEND_CODE_DEFAULT_DIRECT_RESERVE
+    if budget < _CONNECT_TIMEOUT + 3:
+        # There is not enough time for a full proxy attempt plus a small direct
+        # reserve, so spend the entire valid budget on the final direct attempt.
+        return budget, budget
+
+    reserve = max(
+        _SEND_CODE_DEFAULT_DIRECT_RESERVE,
+        min(_SEND_CODE_MAX_DIRECT_RESERVE, round(budget * 0.2)),
+    )
+    reserve = min(reserve, budget - (_CONNECT_TIMEOUT + 2))
+    return budget, reserve
+
+
 def _proxy_is_cooling(proxy: str) -> bool:
     if not proxy:
         return False
@@ -294,9 +330,11 @@ async def send_code(
     proxy_pool: Optional[list] = None,
     device_model: str = "Desktop Client",
     license_key: str = "",
+    client_timeout=None,
 ) -> dict:
     """Create a Telethon client and send verification code."""
     await cleanup_expired()
+    total_budget, direct_reserve = _send_code_budget(client_timeout)
 
     if api_id <= 0 or not api_hash:
         return {"success": False, "message": "API_ID/API_HASH 未配置"}
@@ -340,8 +378,8 @@ async def send_code(
     budget_exceeded = False
     for idx, cand in enumerate(candidates):
         is_last = idx == len(candidates) - 1
-        remaining = _SEND_CODE_TOTAL_BUDGET - (time.monotonic() - start)
-        if not is_last and remaining <= _SEND_CODE_DIRECT_RESERVE:
+        remaining = total_budget - (time.monotonic() - start)
+        if not is_last and remaining <= direct_reserve:
             continue
         if remaining <= 0:
             budget_exceeded = True
@@ -350,7 +388,7 @@ async def send_code(
         c = _make_client(sess_path, api_id, api_hash, cand,
                          device_model=device_model or "Desktop Client")
         try:
-            cap = remaining if is_last else remaining - _SEND_CODE_DIRECT_RESERVE
+            cap = remaining if is_last else remaining - direct_reserve
             per_cand = min(_CONNECT_TIMEOUT + 2, max(1.0, cap))
             await asyncio.wait_for(c.connect(), timeout=per_cand)
         except Exception as e:
@@ -370,15 +408,15 @@ async def send_code(
 
     if client is None:
         _cleanup_session_files(sess_path)
-        if budget_exceeded or time.monotonic() - start >= _SEND_CODE_TOTAL_BUDGET:
+        if budget_exceeded or time.monotonic() - start >= total_budget:
             logger.warning(
                 "send_code for %s: 连接超时预算 %ss 用尽（尝试 %d 个出口）",
-                phone, _SEND_CODE_TOTAL_BUDGET, tried,
+                phone, total_budget, tried,
             )
             return {
                 "success": False,
                 "message": (
-                    f"代理连接超时（{_SEND_CODE_TOTAL_BUDGET}s 内尝试了 "
+                    f"代理连接超时（{total_budget}s 内尝试了 "
                     f"{tried} 个出口），请检查代理配置后重试"
                 ),
             }
@@ -397,7 +435,7 @@ async def send_code(
         # health check can reuse the SAME egress (and fall back to direct if the
         # proxy dies) instead of relying on the client to re-send it.
         _save_session_proxy(sess_path, used_proxy)
-        remaining = _SEND_CODE_TOTAL_BUDGET - (time.monotonic() - start)
+        remaining = total_budget - (time.monotonic() - start)
         if remaining <= 0:
             raise asyncio.TimeoutError
         sent = await asyncio.wait_for(
@@ -455,12 +493,12 @@ async def send_code(
         _cleanup_session_files(sess_path)
         logger.warning(
             "send_code for %s: 代理连接或 Telegram 请求超过 %ss 总预算",
-            phone, _SEND_CODE_TOTAL_BUDGET,
+            phone, total_budget,
         )
         return {
             "success": False,
             "message": (
-                f"代理不可用或连接超时（超过 {_SEND_CODE_TOTAL_BUDGET}s 总预算），"
+                f"代理不可用或连接超时（超过 {total_budget}s 总预算），"
                 "请检查代理配置后重试"
             ),
         }
