@@ -15,6 +15,7 @@ import time
 import secrets
 import sqlite3
 import logging
+from typing import Any
 
 from fastapi import FastAPI, Request, HTTPException, Depends, status
 from fastapi.responses import FileResponse
@@ -87,6 +88,7 @@ class RemoteSendCodeRequest(BaseModel):
     device_model: str = "Desktop Client"
     license_key: str
     hwid: str
+    client_timeout: Any = None
 
 
 class RemoteVerifyCodeRequest(BaseModel):
@@ -275,6 +277,7 @@ async def api_login_send_code(body: RemoteSendCodeRequest):
         proxy_pool=body.proxy_pool,
         device_model=body.device_model,
         license_key=body.license_key,
+        client_timeout=body.client_timeout,
     )
 
 

@@ -39,19 +39,38 @@ class LoginServiceTests(unittest.IsolatedAsyncioTestCase):
             [""],
         )
 
-    def test_send_code_budget_leaves_time_for_direct(self):
-        proxy_budget = (
-            login_service._SEND_CODE_TOTAL_BUDGET
-            - login_service._SEND_CODE_DIRECT_RESERVE
-        )
+    def test_send_code_budget_uses_reported_timeout(self):
+        self.assertEqual(login_service._send_code_budget(90), (60, 12))
 
-        # At least one proxy can be tried without consuming the direct reserve.
-        self.assertGreaterEqual(
-            proxy_budget, login_service._CONNECT_TIMEOUT + 2)
+    def test_send_code_budget_respects_small_reported_timeout(self):
+        budget, _ = login_service._send_code_budget(12)
+
+        self.assertGreater(budget, 0)
+        self.assertLessEqual(budget, 7)
+
+    def test_send_code_budget_falls_back_for_missing_or_dirty_timeout(self):
+        for client_timeout in (None, 0, -1, "90", 9999):
+            with self.subTest(client_timeout=client_timeout):
+                self.assertEqual(
+                    login_service._send_code_budget(client_timeout),
+                    (22, 6),
+                )
+
+    def test_send_code_budget_leaves_time_for_direct(self):
+        for client_timeout in (None, 30, 60, 90, 120):
+            with self.subTest(client_timeout=client_timeout):
+                budget, direct_reserve = login_service._send_code_budget(
+                    client_timeout)
+                proxy_budget = budget - direct_reserve
+
+                # At least one proxy can be tried while preserving direct
+                # fallback time.
+                self.assertGreaterEqual(
+                    proxy_budget, login_service._CONNECT_TIMEOUT + 2)
 
     async def test_send_code_budget_returns_failure(self):
-        with patch.object(login_service, "_SEND_CODE_TOTAL_BUDGET", 0.05), \
-                patch.object(login_service, "_SEND_CODE_DIRECT_RESERVE", 0.02), \
+        with patch.object(login_service, "_send_code_budget",
+                          return_value=(0.05, 0.02)), \
                 patch.object(login_service, "_CONNECT_TIMEOUT", 0.01), \
                 patch.object(login_service, "_make_client",
                              return_value=_SlowClient()), \

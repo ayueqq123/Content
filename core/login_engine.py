@@ -425,6 +425,7 @@ class LoginEngine:
         if api_id <= 0 or not api_hash:
             return {"success": False, "message": "API_ID/API_HASH 未配置"}
 
+        request_timeout = 90
         result = await self._post(_EP_SEND_CODE, {
             "phone": phone,
             "api_id": api_id,
@@ -434,7 +435,8 @@ class LoginEngine:
             "device_model": self._device_model,
             "license_key": self._license_key,
             "hwid": self._hwid,
-        })
+            "client_timeout": request_timeout,
+        }, timeout=request_timeout)
 
         # Retry with a different API credential when the current one is
         # flood-limited or rejected as invalid.
@@ -457,7 +459,8 @@ class LoginEngine:
                     "device_model": self._device_model,
                     "license_key": self._license_key,
                     "hwid": self._hwid,
-                })
+                    "client_timeout": request_timeout,
+                }, timeout=request_timeout)
                 if not (self._is_api_flood(result) or self._is_api_invalid(result)):
                     break
 
