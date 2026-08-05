@@ -73,18 +73,25 @@ _SEND_CODE_MAX_DIRECT_RESERVE = 12
 # the client gives up. Kept comfortably under the client's 30s.
 _CHECK_TOTAL_BUDGET = 22
 
-# Portion of the budget reserved for the FINAL candidate (the direct
+# Portion of the budget reserved for the FINAL candidate (normally the direct
 # connection). Without this, a couple of dead proxies (~10s each) consume the
-# whole budget and the direct fallback is never attempted, so every check on a
-# host with dead proxies returns "未能确认" even though direct would succeed.
+# whole budget and the final candidate is never attempted.
 _DIRECT_RESERVE = 6
 
 # A proxy that repeatedly fails to connect is temporarily skipped for new
-# requests. Keeping this in process memory avoids repeatedly waiting on the same
-# dead proxy while allowing it to recover without a service restart.
-_PROXY_FAILURE_THRESHOLD = 3
-_PROXY_COOLDOWN = 300
+# requests. Keep the threshold high enough to avoid overreacting to a
+# transient failure, and let old failures decay so a proxy is not permanently
+# penalized during a long-running process.
+_PROXY_FAILURE_THRESHOLD = 5
+_PROXY_COOLDOWN = 120
+_PROXY_FAILURE_DECAY_WINDOW = 300
 _proxy_health: dict[str, dict[str, float | int]] = {}
+
+# The desktop client gives up after 60s while downloading tdata. Keep the
+# complete conversion, including the Telegram connection and archive creation,
+# below that deadline so the API can return a useful HTTP 500 instead of
+# continuing after nginx has recorded a client disconnect.
+_TDATA_TOTAL_TIMEOUT = 45
 
 # Some hosts can only reach Telegram's data centers over IPv6 (their IPv4 route
 # to the DC ranges is blocked), which makes every direct connection attempt time
@@ -183,12 +190,18 @@ def _remap_session_dc_to_ipv6(client: "TelegramClient") -> None:
     sess.set_dc(dc_id, ipv6_addr, sess.port or 443)
 
 
-def _build_candidates(*ordered: str, pool: Optional[list] = None) -> list[str]:
+def _build_candidates(*ordered: str, pool: Optional[list] = None,
+                      include_direct: bool = True) -> list[str]:
     """De-duplicated egress order: the given fixed candidates, then a capped
-    slice of the pool. Always ends with "" (direct) as the last resort."""
+    slice of the pool, optionally followed by a direct connection."""
     capped_pool = list(pool or [])[:_MAX_POOL_CANDIDATES]
     candidates: list[str] = []
-    for cand in (*ordered, *capped_pool, ""):
+    all_candidates = (*ordered, *capped_pool)
+    if include_direct:
+        all_candidates += ("",)
+    for cand in all_candidates:
+        if not include_direct and not cand:
+            continue
         if cand not in candidates:
             candidates.append(cand)
     return candidates
@@ -233,16 +246,30 @@ def _proxy_is_cooling(proxy: str) -> bool:
     if not proxy:
         return False
     record = _proxy_health.get(proxy)
-    return bool(record and record["cooldown_until"] > time.monotonic())
+    if not record:
+        return False
+    now = time.monotonic()
+    last_failure_at = record.get("last_failure_at", now)
+    if now - last_failure_at > _PROXY_FAILURE_DECAY_WINDOW:
+        _proxy_health.pop(proxy, None)
+        return False
+    return record["cooldown_until"] > now
 
 
 def _record_proxy_failure(proxy: str) -> None:
     if not proxy:
         return
-    record = _proxy_health.setdefault(proxy, {"failures": 0, "cooldown_until": 0.0})
+    now = time.monotonic()
+    record = _proxy_health.setdefault(
+        proxy,
+        {"failures": 0, "cooldown_until": 0.0, "last_failure_at": now},
+    )
+    if now - record["last_failure_at"] > _PROXY_FAILURE_DECAY_WINDOW:
+        record["failures"] = 0
     record["failures"] += 1
+    record["last_failure_at"] = now
     if record["failures"] >= _PROXY_FAILURE_THRESHOLD:
-        record["cooldown_until"] = time.monotonic() + _PROXY_COOLDOWN
+        record["cooldown_until"] = now + _PROXY_COOLDOWN
 
 
 def _clear_proxy_failure(proxy: str) -> None:
@@ -253,7 +280,11 @@ def _clear_proxy_failure(proxy: str) -> None:
 def _filter_cooled_candidates(candidates: list[str]) -> list[str]:
     filtered = [cand for cand in candidates
                 if not cand or not _proxy_is_cooling(cand)]
-    return filtered or [""]
+    # Never replace an all-cooled proxy list with direct. Callers that selected
+    # proxy-only login must not create an authorization from the server IP.
+    if any(cand for cand in filtered):
+        return filtered
+    return list(candidates)
 
 
 def _license_dir(license_key: str) -> str:
@@ -361,14 +392,19 @@ async def send_code(
     session_id = secrets.token_hex(16)
     sess_path = _session_path(session_id, phone, license_key)
 
-    # Ordered egress candidates: try the bound proxy first, then the rest of the
-    # proxy pool one by one, and only fall back to a direct connection if EVERY
-    # proxy fails to connect. A dead proxy must not block login outright — we
-    # switch to the next proxy (self-heal), and if none work we degrade to
-    # direct and tell the caller (via ``proxy_fell_back``) so it can warn the
-    # group. The proxy actually used is persisted for later health checks.
+    proxy_configured = bool(proxy or proxy_pool)
+    # A configured proxy is mandatory for login. Falling back to the server's
+    # direct IP can create a Telegram authorization that is revoked shortly
+    # after sign-in, leaving the user with an unusable session. Direct remains
+    # available only when the caller did not configure any proxy at all.
     candidates = _filter_cooled_candidates(
-        _build_candidates(proxy, pool=proxy_pool))
+        _build_candidates(
+            proxy,
+            pool=proxy_pool,
+            include_direct=not proxy_configured,
+        ))
+    if proxy_configured:
+        direct_reserve = 0
 
     client: Optional[TelegramClient] = None
     used_proxy: str = ""
@@ -413,22 +449,35 @@ async def send_code(
                 "send_code for %s: 连接超时预算 %ss 用尽（尝试 %d 个出口）",
                 phone, total_budget, tried,
             )
+            if proxy_configured:
+                message = (
+                    f"所有代理均不可用（{total_budget}s 内已尝试 "
+                    f"{tried} 个），为避免裸 IP 登录导致新号被封，"
+                    "请更换代理后重试"
+                )
+            else:
+                message = (
+                    f"代理连接超时（{total_budget}s 内尝试了 "
+                    f"{tried} 个出口），请检查代理配置后重试"
+                )
+            return {"success": False, "message": message}
+        if proxy_configured:
+            logger.warning(
+                "send_code for %s: all proxies unavailable; refusing direct "
+                "fallback to avoid a bare-IP login",
+                phone,
+            )
             return {
                 "success": False,
                 "message": (
-                    f"代理连接超时（{total_budget}s 内尝试了 "
-                    f"{tried} 个出口），请检查代理配置后重试"
+                    f"所有代理均不可用（已尝试 {tried} 个），"
+                    "为避免裸 IP 登录导致新号被封，请更换代理后重试"
                 ),
             }
         return {
             "success": False,
             "message": f"无法连接 Telegram（代理与直连均失败）: {last_conn_err}",
         }
-
-    # A proxy was requested but every pooled proxy failed and we ended up on a
-    # direct connection. (Switching to another pool proxy is a silent self-heal
-    # and is NOT reported as "fell back to direct".)
-    proxy_fell_back = bool(proxy) and used_proxy == ""
 
     try:
         # Persist the proxy this session's auth was created through, so a later
@@ -449,16 +498,12 @@ async def send_code(
             "api_hash": api_hash,
             "license_key": license_key,
         }
-        logger.info(f"Code sent for {phone}, session_id={session_id[:8]}..."
-                    + ("（代理失效，已退回直连）" if proxy_fell_back else ""))
+        logger.info(f"Code sent for {phone}, session_id={session_id[:8]}...")
         result = {
             "success": True,
             "session_id": session_id,
             "message": f"验证码已发送到 {phone}",
         }
-        if proxy_fell_back:
-            result["proxy_fell_back"] = True
-            result["failed_proxy"] = proxy
         return result
     except PhoneNumberInvalidError:
         await client.disconnect()
@@ -636,14 +681,18 @@ async def check_session_valid(phone: str, api_id: int, api_hash: str,
     #   1) proxy sent with this request (the phone's bound proxy)
     #   2) the proxy the session was originally logged in through (persisted)
     #   3) the rest of the proxy pool, one by one
-    #   4) direct connection (no proxy) as a last-resort fallback
-    # This way the check does not hard-depend on any single proxy: if the bound
-    # /login proxy is dead we try the other pooled proxies before finally
-    # falling back to direct, instead of falsely reporting the session invalid.
+    #   4) direct connection only for sessions that were originally direct
+    # A proxy-backed authorization must not be checked over the server's bare
+    # IP after its original proxy fails.
     # A proxy value of "" means direct.
     login_proxy = _load_session_proxy(base_path)
     candidates = _filter_cooled_candidates(
-        _build_candidates(proxy, login_proxy, pool=proxy_pool))
+        _build_candidates(
+            proxy,
+            login_proxy,
+            pool=proxy_pool,
+            include_direct=not bool(login_proxy),
+        ))
 
     last_conn_err = None
     # Remember any non-empty proxy that failed to connect, so that when the
@@ -763,10 +812,16 @@ async def check_session_valid(phone: str, api_id: int, api_hash: str,
             "未能确认，请检查该账号的代理"
         )
     else:
-        message = (
-            f"无法连接 Telegram（尝试了 {tried} 个出口，代理与直连均失败），"
-            f"未能验证: {last_conn_err}"
-        )
+        if login_proxy:
+            message = (
+                f"无法连接 Telegram（尝试了 {tried} 个代理，代理均失败），"
+                f"未能验证: {last_conn_err}"
+            )
+        else:
+            message = (
+                f"无法连接 Telegram（尝试了 {tried} 个出口，代理与直连均失败），"
+                f"未能验证: {last_conn_err}"
+            )
     return {
         "success": False,
         "inconclusive": True,
@@ -814,6 +869,8 @@ async def get_tdata_zip_path(session_id: str, phone: str, license_key: str = "")
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     zip_path = os.path.join(out_dir, f"{safe_phone}_{ts}_tdata.zip")
     temp_dir = tempfile.mkdtemp()
+    client = None
+    deadline = time.monotonic() + _TDATA_TOTAL_TIMEOUT
 
     try:
         tdata_dir = os.path.join(temp_dir, "tdata")
@@ -823,20 +880,59 @@ async def get_tdata_zip_path(session_id: str, phone: str, license_key: str = "")
         if base_session_path.endswith(".session"):
             base_session_path = base_session_path[:-8]
 
-        client = OTelegramClient(base_session_path)
-        await client.connect()
+        login_proxy = _load_session_proxy(base_session_path)
+        client_kwargs = {
+            "proxy": _parse_proxy(login_proxy),
+            "timeout": _CONNECT_TIMEOUT,
+            "connection_retries": _CONNECT_RETRIES,
+            "retry_delay": 0,
+            "use_ipv6": _USE_IPV6 and not login_proxy,
+        }
+        client = OTelegramClient(base_session_path, **client_kwargs)
+        if client_kwargs["use_ipv6"]:
+            _remap_session_dc_to_ipv6(client)
+
         try:
-            tdesk = await client.ToTDesktop(flag=UseCurrentSession)
-            tdesk.SaveTData(tdata_dir)
+            async def convert():
+                await client.connect()
+                tdesk = await client.ToTDesktop(flag=UseCurrentSession)
+                tdesk.SaveTData(tdata_dir)
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise asyncio.TimeoutError
+            await asyncio.wait_for(convert(), timeout=remaining)
         finally:
-            await client.disconnect()
+            try:
+                await asyncio.wait_for(client.disconnect(), timeout=5)
+            except Exception:
+                pass
 
         zip_base = os.path.join(temp_dir, f"{safe_phone}_{ts}_tdata")
-        zip_filepath = shutil.make_archive(zip_base, "zip", root_dir=temp_dir, base_dir="tdata")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise asyncio.TimeoutError
+        zip_filepath = await asyncio.wait_for(
+            asyncio.to_thread(
+                shutil.make_archive,
+                zip_base,
+                "zip",
+                temp_dir,
+                "tdata",
+            ),
+            timeout=remaining,
+        )
 
         shutil.move(zip_filepath, zip_path)
         logger.info(f"tdata zip created: {zip_path}")
         return zip_path
+    except asyncio.TimeoutError:
+        logger.error(
+            "tdata conversion timed out for %s after %ss",
+            phone,
+            _TDATA_TOTAL_TIMEOUT,
+        )
+        return None
     except Exception as e:
         logger.error(f"tdata conversion failed for {phone}: {e}")
         return None
