@@ -587,6 +587,7 @@ class LoginEngine:
             "proxy_pool": self._proxy_alternates_for(phone),
             "license_key": self._license_key,
             "hwid": self._hwid,
+            "client_timeout": 90,
         }, timeout=90)
         return result
 

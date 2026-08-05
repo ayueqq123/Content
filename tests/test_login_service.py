@@ -115,27 +115,27 @@ class LoginServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(login_service._proxy_is_cooling("bad"))
         self.assertNotIn("bad", login_service._proxy_health)
 
-    def test_send_code_budget_uses_reported_timeout(self):
-        self.assertEqual(login_service._send_code_budget(90), (60, 12))
+    def test_request_budget_uses_reported_timeout(self):
+        self.assertEqual(login_service._request_budget(90), (60, 12))
 
-    def test_send_code_budget_respects_small_reported_timeout(self):
-        budget, _ = login_service._send_code_budget(12)
+    def test_request_budget_respects_small_reported_timeout(self):
+        budget, _ = login_service._request_budget(12)
 
         self.assertGreater(budget, 0)
         self.assertLessEqual(budget, 7)
 
-    def test_send_code_budget_falls_back_for_missing_or_dirty_timeout(self):
+    def test_request_budget_falls_back_for_missing_or_dirty_timeout(self):
         for client_timeout in (None, 0, -1, "90", 9999):
             with self.subTest(client_timeout=client_timeout):
                 self.assertEqual(
-                    login_service._send_code_budget(client_timeout),
+                    login_service._request_budget(client_timeout),
                     (22, 6),
                 )
 
-    def test_send_code_budget_leaves_time_for_direct(self):
+    def test_request_budget_leaves_time_for_direct(self):
         for client_timeout in (None, 30, 60, 90, 120):
             with self.subTest(client_timeout=client_timeout):
-                budget, direct_reserve = login_service._send_code_budget(
+                budget, direct_reserve = login_service._request_budget(
                     client_timeout)
                 proxy_budget = budget - direct_reserve
 
@@ -145,7 +145,7 @@ class LoginServiceTests(unittest.IsolatedAsyncioTestCase):
                     proxy_budget, login_service._CONNECT_TIMEOUT + 2)
 
     async def test_send_code_budget_returns_failure(self):
-        with patch.object(login_service, "_send_code_budget",
+        with patch.object(login_service, "_request_budget",
                           return_value=(0.05, 0.02)), \
                 patch.object(login_service, "_CONNECT_TIMEOUT", 0.01), \
                 patch.object(login_service, "_make_client",
@@ -272,7 +272,7 @@ class LoginServiceTests(unittest.IsolatedAsyncioTestCase):
                 login_service, "_load_session_proxy",
                 return_value="socks5://bound.example:1080",
             ), patch.object(
-                login_service, "_CHECK_TOTAL_BUDGET", 1.0,
+                login_service, "_request_budget", return_value=(1.0, 0.6),
             ), patch.object(
                 login_service, "_make_client", side_effect=make_client,
             ):
@@ -286,3 +286,34 @@ class LoginServiceTests(unittest.IsolatedAsyncioTestCase):
         # With the reserve applied to a proxy-only chain, the last two proxies
         # would have been skipped even though there was budget left.
         self.assertGreaterEqual(len(attempted), 4)
+
+    async def test_check_session_uses_reported_client_timeout(self):
+        reported = []
+
+        def budget(client_timeout):
+            reported.append(client_timeout)
+            return (0.2, 0.1)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            session_path = f"{temp_dir}/proxy-session_123.session"
+            with open(session_path, "w", encoding="utf-8"):
+                pass
+            with patch.object(
+                login_service, "_SESSIONS_DIR", temp_dir,
+            ), patch.object(
+                login_service, "_load_session_proxy",
+                return_value="socks5://bound.example:1080",
+            ), patch.object(
+                login_service, "_request_budget", side_effect=budget,
+            ), patch.object(
+                login_service, "_make_client",
+                return_value=_SlowFailingClient(),
+            ):
+                await login_service.check_session_valid(
+                    phone="+123",
+                    api_id=1,
+                    api_hash="hash",
+                    client_timeout=90,
+                )
+
+        self.assertEqual(reported, [90])
