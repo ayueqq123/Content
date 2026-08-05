@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 # offered to the server before it degrades to direct. Sending the entire pool
 # (which can be hundreds of proxies) made the server try each one sequentially,
 # turning a single dead proxy into a multi-minute send_code stall.
-_MAX_PROXY_ALTERNATES = 3
+_MAX_PROXY_ALTERNATES = 5
 
 
 def parse_api_pool(raw: str) -> list[tuple[int, str]]:

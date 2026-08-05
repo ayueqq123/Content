@@ -46,11 +46,14 @@ _SEND_CODE_COOLDOWN = 60
 # send_code / check_session into multi-minute stalls. We fail fast on each
 # candidate and rely on the ordered list (bound proxy -> a few pool alternates
 # -> direct) for resilience.
-_CONNECT_TIMEOUT = 8   # seconds per connection attempt
+# A healthy proxy completes the CONNECT/SOCKS handshake plus the MTProto
+# handshake in ~2s, so 5s is generous while letting the fixed request budget
+# cover more egresses: a 22s budget reaches 3 candidates instead of 2.
+_CONNECT_TIMEOUT = 5   # seconds per connection attempt
 _CONNECT_RETRIES = 1   # attempts per candidate before moving to the next
 # Cap how many pooled alternates we actually try, as defense-in-depth in case a
 # client still sends the whole pool.
-_MAX_POOL_CANDIDATES = 5
+_MAX_POOL_CANDIDATES = 8
 
 # The server budget must remain below the client's HTTP timeout so a bounded
 # failure reaches the caller before the client disconnects. The currently
@@ -66,7 +69,7 @@ _SEND_CODE_DEFAULT_DIRECT_RESERVE = 6
 _SEND_CODE_MAX_DIRECT_RESERVE = 12
 
 # Overall wall-clock budget for one check_session_valid call. Even with fail-fast
-# per candidate (8s each), a long candidate list (bound proxy + pool + direct)
+# per candidate, a long candidate list (bound proxy + pool + direct)
 # could still exceed the desktop client's 30s HTTP timeout — the client would
 # then abort with an empty "网络请求失败" instead of getting our clean
 # "inconclusive" answer. Cap the total so we always reply (inconclusive) before
@@ -74,8 +77,9 @@ _SEND_CODE_MAX_DIRECT_RESERVE = 12
 _CHECK_TOTAL_BUDGET = 22
 
 # Portion of the budget reserved for the FINAL candidate (normally the direct
-# connection). Without this, a couple of dead proxies (~10s each) consume the
-# whole budget and the final candidate is never attempted.
+# connection). Without this, a couple of dead proxies consume the whole budget
+# and the final candidate is never attempted. Only applied when the chain
+# actually ends with a direct candidate.
 _DIRECT_RESERVE = 6
 
 # A proxy that repeatedly fails to connect is temporarily skipped for new
@@ -161,6 +165,8 @@ def _make_client(session: str, api_id: int, api_hash: str, cand: str,
     client = TelegramClient(session, **kwargs)
     if kwargs["use_ipv6"]:
         _remap_session_dc_to_ipv6(client)
+    elif proxy is not None:
+        _remap_session_dc_to_ipv4(client)
     return client
 
 
@@ -176,6 +182,30 @@ _DC_IPV6 = {
     4: "2001:67c:4e8:f004::a",
     5: "2001:b28:f23f:f005::a",
 }
+
+
+# Telegram's per-DC IPv4 addresses, used to undo an IPv6 remap. ``set_dc``
+# persists the swapped address into the session file, so a session that was
+# once connected directly over IPv6 keeps an IPv6 DC address forever — and a
+# proxy cannot tunnel to it (HTTP proxies answer 503, SOCKS5 reports a general
+# failure), leaving that account permanently unverifiable through its proxy.
+_DC_IPV4 = {
+    1: "149.154.175.53",
+    2: "149.154.167.51",
+    3: "149.154.175.100",
+    4: "149.154.167.91",
+    5: "91.108.56.130",
+}
+
+
+def _remap_session_dc_to_ipv4(client: "TelegramClient") -> None:
+    sess = client.session
+    dc_id = sess.dc_id
+    addr = sess.server_address
+    ipv4_addr = _DC_IPV4.get(dc_id)
+    if not addr or ":" not in addr or not ipv4_addr:
+        return  # no stored DC, already IPv4, or unknown DC
+    sess.set_dc(dc_id, ipv4_addr, sess.port or 443)
 
 
 def _remap_session_dc_to_ipv6(client: "TelegramClient") -> None:
@@ -703,10 +733,14 @@ async def check_session_valid(phone: str, api_id: int, api_hash: str,
     start = time.monotonic()
     tried = 0
     budget_exceeded = False
+    # The reserve exists to guarantee the direct fallback a slot. A proxy-only
+    # chain has nothing to protect, so reserving there just throws away budget
+    # that could have tried another proxy.
+    reserve = _DIRECT_RESERVE if candidates and candidates[-1] == "" else 0
     for idx, cand in enumerate(candidates):
         is_last = idx == len(candidates) - 1
         remaining = _CHECK_TOTAL_BUDGET - (time.monotonic() - start)
-        if not is_last and remaining <= _DIRECT_RESERVE:
+        if not is_last and remaining <= reserve:
             # Not enough budget left for this proxy AND the final direct
             # attempt — skip ahead so direct always gets its reserved slot.
             continue
@@ -721,7 +755,7 @@ async def check_session_valid(phone: str, api_id: int, api_hash: str,
                 # can't eat the whole budget and starve the fallback candidates
                 # (especially the direct connection). Non-final candidates also
                 # leave _DIRECT_RESERVE for the final direct attempt.
-                cap = remaining if is_last else remaining - _DIRECT_RESERVE
+                cap = remaining if is_last else remaining - reserve
                 per_cand = min(_CONNECT_TIMEOUT + 2, max(1.0, cap))
                 await asyncio.wait_for(client.connect(), timeout=per_cand)
             except Exception as e:
@@ -891,6 +925,8 @@ async def get_tdata_zip_path(session_id: str, phone: str, license_key: str = "")
         client = OTelegramClient(base_session_path, **client_kwargs)
         if client_kwargs["use_ipv6"]:
             _remap_session_dc_to_ipv6(client)
+        elif login_proxy:
+            _remap_session_dc_to_ipv4(client)
 
         try:
             async def convert():
