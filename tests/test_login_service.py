@@ -274,6 +274,8 @@ class LoginServiceTests(unittest.IsolatedAsyncioTestCase):
             ), patch.object(
                 login_service, "_request_budget", return_value=(1.0, 0.6),
             ), patch.object(
+                login_service, "_MAX_POOL_CANDIDATES", len(pool),
+            ), patch.object(
                 login_service, "_make_client", side_effect=make_client,
             ):
                 await login_service.check_session_valid(
