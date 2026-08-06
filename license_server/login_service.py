@@ -7,6 +7,7 @@ by authenticated clients.
 """
 
 import os
+import re
 import asyncio
 import secrets
 import time
@@ -316,6 +317,13 @@ def _record_proxy_failure(proxy: str) -> None:
 def _clear_proxy_failure(proxy: str) -> None:
     if proxy:
         _proxy_health.pop(proxy, None)
+
+
+def _mask_proxy(proxy: str) -> str:
+    """Render a proxy for logs without its credentials."""
+    if not proxy:
+        return "direct"
+    return re.sub(r"//([^:/@]+):[^@]*@", r"//\1:***@", proxy)
 
 
 def _filter_cooled_candidates(candidates: list[str]) -> list[str]:
@@ -860,6 +868,16 @@ async def check_session_valid(phone: str, api_id: int, api_hash: str,
             "未能确认，请检查该账号的代理"
         )
     else:
+        # This branch used to return silently, so a client showing "代理均失败"
+        # left no trace on the server at all and the only countable symptom,
+        # the budget warning above, stayed at zero. Log the egresses that were
+        # actually tried (credentials stripped) so a bad proxy is identifiable.
+        logger.warning(
+            "check_session for %s: 尝试 %d 个出口全部连接失败 [%s]，返回未能确认: %s",
+            phone, tried,
+            ", ".join(_mask_proxy(c) for c in candidates[:tried]),
+            last_conn_err,
+        )
         if login_proxy:
             message = (
                 f"无法连接 Telegram（尝试了 {tried} 个代理，代理均失败），"
