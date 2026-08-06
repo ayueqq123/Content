@@ -235,6 +235,28 @@ class LoginServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["inconclusive"])
         self.assertNotIn("", attempted)
 
+    def test_login_clients_retry_reconnects_check_session_does_not(self):
+        captured = []
+
+        def fake_client(session, **kwargs):
+            captured.append(kwargs["connection_retries"])
+            return types.SimpleNamespace(
+                session=_FakeSession(2, "149.154.167.51"))
+
+        with patch.object(login_service, "TelegramClient", fake_client):
+            login_service._make_client("s", 1, "hash", "socks5://p:1080")
+            login_service._make_client("s", 1, "hash", "socks5://p:1080",
+                                       retries=login_service.
+                                       _LOGIN_CONNECT_RETRIES)
+
+        self.assertEqual(
+            captured,
+            [login_service._CONNECT_RETRIES,
+             login_service._LOGIN_CONNECT_RETRIES],
+        )
+        self.assertGreater(login_service._LOGIN_CONNECT_RETRIES,
+                           login_service._CONNECT_RETRIES)
+
     def test_ipv6_session_dc_is_remapped_back_to_ipv4(self):
         client = types.SimpleNamespace(
             session=_FakeSession(2, "2001:67c:4e8:f002::a"))

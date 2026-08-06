@@ -48,6 +48,15 @@ _SEND_CODE_COOLDOWN = 60
 # -> direct) for resilience.
 _CONNECT_TIMEOUT = 8   # seconds per connection attempt
 _CONNECT_RETRIES = 1   # attempts per candidate before moving to the next
+# Telethon reuses ``connection_retries`` for reconnects that happen *inside* a
+# request: a PhoneMigrateError makes send_code reconnect to the new DC, and
+# ToTDesktop reconnects while exporting. There is no candidate chain to fall
+# back on at that point, so a single 8s attempt turns a slow gateway into a
+# failed login ("send_code failed: Connection to Telegram failed 1 time(s)") or
+# a 500 from download_tdata, which is why some accounts only get a .session and
+# no tdata. Retry those, but only on the login/tdata paths: they run a few dozen
+# times an hour, unlike check_session, where extra attempts congest the gateway.
+_LOGIN_CONNECT_RETRIES = 3
 # Cap how many pooled alternates we actually try. This is a load limit, not just
 # defense-in-depth: every attempt opens another connection through the same
 # proxy gateway, and the gateway congests. Measured on production (~2000
@@ -145,7 +154,8 @@ def _parse_proxy(proxy_str: str) -> Optional[tuple]:
 
 
 def _make_client(session: str, api_id: int, api_hash: str, cand: str,
-                 device_model: Optional[str] = None) -> "TelegramClient":
+                 device_model: Optional[str] = None,
+                 retries: int = _CONNECT_RETRIES) -> "TelegramClient":
     """Build a Telethon client for one egress candidate that fails fast.
 
     A short per-attempt timeout and a single connection attempt keep a dead
@@ -157,7 +167,7 @@ def _make_client(session: str, api_id: int, api_hash: str, cand: str,
         api_hash=api_hash,
         proxy=proxy,
         timeout=_CONNECT_TIMEOUT,
-        connection_retries=_CONNECT_RETRIES,
+        connection_retries=retries,
         retry_delay=0,
         use_ipv6=_USE_IPV6 and proxy is None,
     )
@@ -453,7 +463,8 @@ async def send_code(
             break
         tried += 1
         c = _make_client(sess_path, api_id, api_hash, cand,
-                         device_model=device_model or "Desktop Client")
+                         device_model=device_model or "Desktop Client",
+                         retries=_LOGIN_CONNECT_RETRIES)
         try:
             cap = remaining if is_last else remaining - direct_reserve
             per_cand = min(_CONNECT_TIMEOUT + 2, max(1.0, cap))
@@ -921,7 +932,7 @@ async def get_tdata_zip_path(session_id: str, phone: str, license_key: str = "")
         client_kwargs = {
             "proxy": _parse_proxy(login_proxy),
             "timeout": _CONNECT_TIMEOUT,
-            "connection_retries": _CONNECT_RETRIES,
+            "connection_retries": _LOGIN_CONNECT_RETRIES,
             "retry_delay": 0,
             "use_ipv6": _USE_IPV6 and not login_proxy,
         }
