@@ -235,6 +235,33 @@ class LoginServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["inconclusive"])
         self.assertNotIn("", attempted)
 
+    async def test_all_egress_failed_is_logged_without_credentials(self):
+        def make_client(session, api_id, api_hash, candidate,
+                        device_model=None):
+            return _FailingClient()
+
+        proxy = "socks5://user-abc:hunter2@dc.oxylabs.io:8823"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            session_path = f"{temp_dir}/proxy-session_123.session"
+            with open(session_path, "w", encoding="utf-8"):
+                pass
+            with patch.object(
+                login_service, "_SESSIONS_DIR", temp_dir,
+            ), patch.object(
+                login_service, "_load_session_proxy", return_value=proxy,
+            ), patch.object(
+                login_service, "_make_client", side_effect=make_client,
+            ), self.assertLogs(login_service.logger, "WARNING") as logs:
+                result = await login_service.check_session_valid(
+                    phone="+123", api_id=1, api_hash="hash", proxy=proxy,
+                )
+
+        self.assertTrue(result["inconclusive"])
+        logged = "\n".join(logs.output)
+        self.assertIn("+123", logged)
+        self.assertIn("dc.oxylabs.io:8823", logged)
+        self.assertNotIn("hunter2", logged)
+
     def test_login_clients_retry_reconnects_check_session_does_not(self):
         captured = []
 
