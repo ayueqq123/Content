@@ -74,15 +74,21 @@ _LOGIN_CONNECT_RETRIES = 3
 # connects further. Keep the chain short and let the retry (still 122 connect
 # timeouts in the passing window) absorb individual bad egresses.
 _MAX_POOL_CANDIDATES = 1
+# send_code is different: it runs a few dozen times an hour (vs ~2000
+# check_session/hour), so walking the whole pool does not congest the gateway,
+# and a user-facing login should exhaust every configured egress before
+# failing. The budget, not this cap, bounds how many candidates are tried.
+_SEND_CODE_MAX_POOL_CANDIDATES = 64
 
 # The server budget must remain below the client's HTTP timeout so a bounded
 # failure reaches the caller before the client disconnects. Clients that do not
 # report a timeout are assumed to use the old hard-coded 30s and get a 22s
-# fallback. Clients that report their timeout get an adaptive budget: a 90s
-# client gets min(60, 90 - 5) = 60s, with 5s reserved for TLS handshakes, nginx
-# forwarding, and response transmission. Applies to send_code and check_session.
+# fallback. Clients that report their timeout get an adaptive budget: a 185s
+# client gets min(180, 185 - 5) = 180s, with 5s reserved for TLS handshakes,
+# nginx forwarding, and response transmission. Applies to send_code and
+# check_session.
 _SEND_CODE_DEFAULT_BUDGET = 22
-_SEND_CODE_MAX_BUDGET = 60
+_SEND_CODE_MAX_BUDGET = 180
 _SEND_CODE_CLIENT_SAFETY_MARGIN = 5
 _SEND_CODE_MAX_REPORTED_TIMEOUT = 300
 _SEND_CODE_DEFAULT_DIRECT_RESERVE = 6
@@ -234,10 +240,11 @@ def _remap_session_dc_to_ipv6(client: "TelegramClient") -> None:
 
 
 def _build_candidates(*ordered: str, pool: Optional[list] = None,
-                      include_direct: bool = True) -> list[str]:
+                      include_direct: bool = True,
+                      pool_cap: int = _MAX_POOL_CANDIDATES) -> list[str]:
     """De-duplicated egress order: the given fixed candidates, then a capped
     slice of the pool, optionally followed by a direct connection."""
-    capped_pool = list(pool or [])[:_MAX_POOL_CANDIDATES]
+    capped_pool = list(pool or [])[:pool_cap]
     candidates: list[str] = []
     all_candidates = (*ordered, *capped_pool)
     if include_direct:
@@ -462,6 +469,7 @@ async def send_code(
             proxy,
             pool=proxy_pool,
             include_direct=not proxy_configured,
+            pool_cap=_SEND_CODE_MAX_POOL_CANDIDATES,
         ))
     if proxy_configured:
         direct_reserve = 0
@@ -514,12 +522,12 @@ async def send_code(
                 message = (
                     f"所有代理均不可用（{total_budget}s 内已尝试 "
                     f"{tried} 个），为避免裸 IP 登录导致新号被封，"
-                    "请更换代理后重试"
+                    "请重新发送"
                 )
             else:
                 message = (
                     f"代理连接超时（{total_budget}s 内尝试了 "
-                    f"{tried} 个出口），请检查代理配置后重试"
+                    f"{tried} 个出口），请重新发送"
                 )
             return {"success": False, "message": message}
         if proxy_configured:
@@ -605,7 +613,7 @@ async def send_code(
             "success": False,
             "message": (
                 f"代理不可用或连接超时（超过 {total_budget}s 总预算），"
-                "请检查代理配置后重试"
+                "请重新发送"
             ),
         }
     except Exception as e:

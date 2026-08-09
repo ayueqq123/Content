@@ -16,11 +16,16 @@ from core.crypto import decrypt as _d
 
 logger = logging.getLogger(__name__)
 
-# When a phone's bound proxy is dead, only a handful of pool alternates are
-# offered to the server before it degrades to direct. Sending the entire pool
-# (which can be hundreds of proxies) made the server try each one sequentially,
-# turning a single dead proxy into a multi-minute send_code stall.
-_MAX_PROXY_ALTERNATES = 3
+# When a phone's bound proxy is dead, the pool alternates are offered to the
+# server so it can keep retrying other egresses within its request budget.
+# The server's time budget (not this cap) bounds how many are actually tried,
+# so a large cap does not stall a request beyond the send_code timeout.
+_MAX_PROXY_ALTERNATES = 64
+
+# Send-code HTTP timeout. The server derives its own retry budget from this
+# (budget = min(180, client_timeout - 5)), so 185s yields a 3-minute window to
+# walk the proxy pool before returning a bounded failure.
+_SEND_CODE_TIMEOUT = 185
 
 
 def parse_api_pool(raw: str) -> list[tuple[int, str]]:
@@ -248,9 +253,9 @@ class LoginEngine:
         """Return the other pool proxies to try if this phone's bound proxy dies.
 
         Excludes the phone's own bound proxy and blanks, and is capped at
-        ``_MAX_PROXY_ALTERNATES`` (randomly sampled) so a dead bound proxy costs
-        at most a few extra connection attempts before the server degrades to
-        direct, instead of walking the whole pool.
+        ``_MAX_PROXY_ALTERNATES`` (randomly sampled). The server walks these
+        within its request budget, so a dead bound proxy is absorbed by the
+        remaining pool instead of failing the login.
         """
         bound = self._proxy_for(phone)
         if not self._proxy_list:
@@ -425,7 +430,7 @@ class LoginEngine:
         if api_id <= 0 or not api_hash:
             return {"success": False, "message": "API_ID/API_HASH 未配置"}
 
-        request_timeout = 90
+        request_timeout = _SEND_CODE_TIMEOUT
         result = await self._post(_EP_SEND_CODE, {
             "phone": phone,
             "api_id": api_id,
