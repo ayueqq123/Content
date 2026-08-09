@@ -522,12 +522,12 @@ async def send_code(
                 message = (
                     f"所有代理均不可用（{total_budget}s 内已尝试 "
                     f"{tried} 个），为避免裸 IP 登录导致新号被封，"
-                    "请更换代理后重试"
+                    "请重新发送"
                 )
             else:
                 message = (
                     f"代理连接超时（{total_budget}s 内尝试了 "
-                    f"{tried} 个出口），请检查代理配置后重试"
+                    f"{tried} 个出口），请重新发送"
                 )
             return {"success": False, "message": message}
         if proxy_configured:
@@ -613,7 +613,7 @@ async def send_code(
             "success": False,
             "message": (
                 f"代理不可用或连接超时（超过 {total_budget}s 总预算），"
-                "请检查代理配置后重试"
+                "请重新发送"
             ),
         }
     except Exception as e:

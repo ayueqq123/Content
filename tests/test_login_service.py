@@ -199,7 +199,7 @@ class LoginServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["success"])
         self.assertTrue(result["api_id_invalid"])
         self.assertEqual(result["api_id"], 8_991_561_850)
-        self.assertIn("8_991_561_850", result["message"])
+        self.assertIn("8991561850", result["message"])
         self.assertIn(str(login_service._MAX_API_ID), result["message"])
         request_budget.assert_not_called()
 
