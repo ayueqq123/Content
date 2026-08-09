@@ -116,7 +116,24 @@ class LoginServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("bad", login_service._proxy_health)
 
     def test_request_budget_uses_reported_timeout(self):
-        self.assertEqual(login_service._request_budget(90), (60, 12))
+        self.assertEqual(login_service._request_budget(90), (85, 12))
+        self.assertEqual(login_service._request_budget(185), (180, 12))
+        self.assertEqual(login_service._request_budget(300), (180, 12))
+
+    def test_build_candidates_pool_cap(self):
+        pool = [f"proxy{i}" for i in range(10)]
+
+        self.assertEqual(
+            login_service._build_candidates(
+                "bound", pool=pool, include_direct=False),
+            ["bound"] + pool[:login_service._MAX_POOL_CANDIDATES],
+        )
+        self.assertEqual(
+            login_service._build_candidates(
+                "bound", pool=pool, include_direct=False,
+                pool_cap=login_service._SEND_CODE_MAX_POOL_CANDIDATES),
+            ["bound"] + pool,
+        )
 
     def test_request_budget_respects_small_reported_timeout(self):
         budget, _ = login_service._request_budget(12)
