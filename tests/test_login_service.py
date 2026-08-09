@@ -167,6 +167,25 @@ class LoginServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("所有代理均不可用", result["message"])
         self.assertIn("裸 IP", result["message"])
 
+    async def test_send_code_reports_out_of_range_api_id(self):
+        with patch.object(
+            login_service,
+            "cleanup_expired",
+            new_callable=AsyncMock,
+        ), patch.object(login_service, "_request_budget") as request_budget:
+            result = await login_service.send_code(
+                phone="+123",
+                api_id=8_991_561_850,
+                api_hash="hash",
+            )
+
+        self.assertFalse(result["success"])
+        self.assertTrue(result["api_id_invalid"])
+        self.assertEqual(result["api_id"], 8_991_561_850)
+        self.assertIn("8_991_561_850", result["message"])
+        self.assertIn(str(login_service._MAX_API_ID), result["message"])
+        request_budget.assert_not_called()
+
     async def test_tdata_conversion_timeout_returns_none(self):
         fake_td = types.ModuleType("opentele.td")
         fake_td.TDesktop = object
