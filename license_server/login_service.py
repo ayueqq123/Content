@@ -49,6 +49,7 @@ _SEND_CODE_COOLDOWN = 60
 # -> direct) for resilience.
 _CONNECT_TIMEOUT = 8   # seconds per connection attempt
 _CONNECT_RETRIES = 1   # attempts per candidate before moving to the next
+_MAX_API_ID = 2_147_483_647
 # Telethon reuses ``connection_retries`` for reconnects that happen *inside* a
 # request: a PhoneMigrateError makes send_code reconnect to the new DC, and
 # ToTDesktop reconnects while exporting. There is no candidate chain to fall
@@ -414,6 +415,16 @@ async def send_code(
 ) -> dict:
     """Create a Telethon client and send verification code."""
     await cleanup_expired()
+    if not 0 < api_id <= _MAX_API_ID:
+        logger.warning("API_ID_INVALID_RANGE: api_id=%s", api_id)
+        return {
+            "success": False,
+            "message": (
+                f"API_ID={api_id} 无效：必须是 1 到 {_MAX_API_ID} 之间的整数"
+            ),
+            "api_id": api_id,
+            "api_id_invalid": True,
+        }
     total_budget, direct_reserve = _request_budget(client_timeout)
 
     if api_id <= 0 or not api_hash:
