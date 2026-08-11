@@ -613,6 +613,10 @@ async def _do_send_code(bot: Bot, chat_id: int, uid: int, name: str, phone: str)
         return True
     _pop_state(uid, bot)
     err_msg = result.get('message', '发送验证码失败')
+    if result.get("proxy_unavailable"):
+        custom = _c("proxy_fail_text", "").strip()
+        if custom:
+            err_msg = custom
     await bot.send_message(
         chat_id, f"❌ {err_msg}",
         reply_markup=main_menu_kb(

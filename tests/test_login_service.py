@@ -183,6 +183,7 @@ class LoginServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["success"])
         self.assertIn("所有代理均不可用", result["message"])
         self.assertIn("裸 IP", result["message"])
+        self.assertTrue(result["proxy_unavailable"])
 
     async def test_send_code_reports_out_of_range_api_id(self):
         with patch.object(
