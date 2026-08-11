@@ -529,7 +529,11 @@ async def send_code(
                     f"代理连接超时（{total_budget}s 内尝试了 "
                     f"{tried} 个出口），请重新发送"
                 )
-            return {"success": False, "message": message}
+            return {
+                "success": False,
+                "message": message,
+                "proxy_unavailable": True,
+            }
         if proxy_configured:
             logger.warning(
                 "send_code for %s: all proxies unavailable; refusing direct "
@@ -542,6 +546,7 @@ async def send_code(
                     f"所有代理均不可用（已尝试 {tried} 个），"
                     "为避免裸 IP 登录导致新号被封，请重新发送"
                 ),
+                "proxy_unavailable": True,
             }
         return {
             "success": False,
@@ -615,6 +620,7 @@ async def send_code(
                 f"代理不可用或连接超时（超过 {total_budget}s 总预算），"
                 "请重新发送"
             ),
+            "proxy_unavailable": True,
         }
     except Exception as e:
         logger.exception(f"send_code failed for {phone}")

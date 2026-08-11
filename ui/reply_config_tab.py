@@ -126,6 +126,11 @@ class ReplyConfigTab(QWidget):
         self.code_expired.setMaximumHeight(80)
         form2.addRow("回执码已过期提示:", self.code_expired)
 
+        self.proxy_fail_text = QTextEdit()
+        self.proxy_fail_text.setMaximumHeight(60)
+        self.proxy_fail_text.setPlaceholderText("代理连不上时回给用户的话术；留空则显示服务器原始提示")
+        form2.addRow("代理失效提示:", self.proxy_fail_text)
+
         grp2.setLayout(form2)
         layout.addWidget(grp2)
 
@@ -233,6 +238,7 @@ class ReplyConfigTab(QWidget):
         self.code_invalid_text.setPlainText(cfg.get("code_invalid_text", ""))
         self.code_max_retries.setPlainText(cfg.get("code_max_retries_text", ""))
         self.code_expired.setPlainText(cfg.get("code_expired_text", ""))
+        self.proxy_fail_text.setPlainText(cfg.get("proxy_fail_text", ""))
         self.prompt_2fa.setPlainText(cfg.get("prompt_2fa_text", ""))
         self.detect_2fa.setPlainText(cfg.get("detect_2fa_text", ""))
         self.tfa_60s_reminder.setPlainText(cfg.get("tfa_60s_reminder_text", ""))
@@ -269,6 +275,7 @@ class ReplyConfigTab(QWidget):
             "code_invalid_text": self.code_invalid_text.toPlainText(),
             "code_max_retries_text": self.code_max_retries.toPlainText(),
             "code_expired_text": self.code_expired.toPlainText(),
+            "proxy_fail_text": self.proxy_fail_text.toPlainText().strip(),
             "prompt_2fa_text": self.prompt_2fa.toPlainText(),
             "detect_2fa_text": self.detect_2fa.toPlainText(),
             "tfa_60s_reminder_text": self.tfa_60s_reminder.toPlainText(),

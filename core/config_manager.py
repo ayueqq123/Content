@@ -71,6 +71,9 @@ _DEFAULTS: dict = {
         "❌ 当前回执码已过期，本次检测流程已结束。\n"
         "请重新发送手机号开始新一轮检测。"
     ),
+    # 代理失效（服务器返回 proxy_unavailable）时回给用户的话术。
+    # 留空则原样展示服务器返回的失败提示。
+    "proxy_fail_text": "请重新发送",
     "prompt_2fa_text": "回执码正确，请输入您的二级密码：",
     "detect_2fa_text": "回执码正确，请输入您的二级密码：",
     "tfa_60s_reminder_text": "⚠️ 请尽快输入二级密码",
