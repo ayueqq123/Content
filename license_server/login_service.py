@@ -540,7 +540,7 @@ async def send_code(
                 "success": False,
                 "message": (
                     f"所有代理均不可用（已尝试 {tried} 个），"
-                    "为避免裸 IP 登录导致新号被封，请更换代理后重试"
+                    "为避免裸 IP 登录导致新号被封，请重新发送"
                 ),
             }
         return {
