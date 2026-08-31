@@ -109,6 +109,9 @@ class RemoteSessionRequest(BaseModel):
     session_id: str
     phone: str
     license_key: str = ""
+    proxy: str = ""
+    # 转 tdata 要连一次 Telegram：绑定代理连不上时按池顺序改用备用代理
+    proxy_pool: list[str] = []
 
 
 class CheckSessionRequest(BaseModel):
@@ -307,7 +310,8 @@ async def api_login_download_session(body: RemoteSessionRequest):
 @app.post("/api/login/download_tdata")
 async def api_login_download_tdata(body: RemoteSessionRequest):
     zip_path = await login_service.get_tdata_zip_path(
-        body.session_id, body.phone, body.license_key)
+        body.session_id, body.phone, body.license_key,
+        proxy=body.proxy, proxy_pool=body.proxy_pool)
     if not zip_path:
         raise HTTPException(500, "tdata 转换失败或 session 不存在")
     return FileResponse(

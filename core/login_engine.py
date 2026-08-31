@@ -521,7 +521,9 @@ class LoginEngine:
                 resp = await client.post(
                     self._url(_EP_DOWNLOAD_TDATA),
                     json={"session_id": session_id, "phone": phone,
-                          "license_key": self._license_key},
+                          "license_key": self._license_key,
+                          "proxy": self._proxy_for(phone),
+                          "proxy_pool": self._proxy_alternates_for(phone)},
                 )
                 if resp.status_code == 200:
                     fname = None
