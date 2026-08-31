@@ -244,10 +244,11 @@ def _remap_session_dc_to_ipv6(client: "TelegramClient") -> None:
 
 def _build_candidates(*ordered: str, pool: Optional[list] = None,
                       include_direct: bool = True,
-                      pool_cap: int = _MAX_POOL_CANDIDATES) -> list[str]:
+                      pool_cap: Optional[int] = None) -> list[str]:
     """De-duplicated egress order: the given fixed candidates, then a capped
     slice of the pool, optionally followed by a direct connection."""
-    capped_pool = list(pool or [])[:pool_cap]
+    cap = _MAX_POOL_CANDIDATES if pool_cap is None else pool_cap
+    capped_pool = list(pool or [])[:cap]
     candidates: list[str] = []
     all_candidates = (*ordered, *capped_pool)
     if include_direct:
@@ -561,6 +562,7 @@ async def send_code(
         # health check can reuse the SAME egress (and fall back to direct if the
         # proxy dies) instead of relying on the client to re-send it.
         _save_session_proxy(sess_path, used_proxy)
+        _save_session_proxy_pool(sess_path, proxy_pool)
         remaining = total_budget - (time.monotonic() - start)
         if remaining <= 0:
             raise asyncio.TimeoutError
@@ -755,6 +757,7 @@ async def check_session_valid(phone: str, api_id: int, api_hash: str,
     # Use the most recent session file
     sess_file = session_files[0]
     base_path = sess_file[:-8]  # remove .session suffix
+    _save_session_proxy_pool(base_path, proxy_pool)
 
     # Build the ordered list of egresses to try, de-duplicated:
     #   1) proxy sent with this request (the phone's bound proxy)
@@ -977,11 +980,13 @@ async def get_tdata_zip_path(session_id: str, phone: str, license_key: str = "",
             base_session_path = base_session_path[:-8]
 
         login_proxy = _load_session_proxy(base_session_path)
+        pool = list(proxy_pool or []) or _load_session_proxy_pool(
+            base_session_path)
         candidates = _filter_cooled_candidates(
             _build_candidates(
                 proxy,
                 login_proxy,
-                pool=proxy_pool,
+                pool=pool,
                 include_direct=not bool(login_proxy),
                 pool_cap=_TDATA_MAX_POOL_CANDIDATES,
             ))
@@ -1114,10 +1119,31 @@ def _load_session_proxy(base_path: str) -> str:
         return ""
 
 
+def _save_session_proxy_pool(base_path: str, pool) -> None:
+    """Persist the pool the caller uploaded next to the .session (latest wins)."""
+    entries = [p.strip() for p in (pool or [])
+               if isinstance(p, str) and p.strip()]
+    if not entries:
+        return
+    try:
+        with open(base_path + ".pool", "w", encoding="utf-8") as f:
+            f.write("\n".join(entries))
+    except Exception:
+        pass
+
+
+def _load_session_proxy_pool(base_path: str) -> list[str]:
+    try:
+        with open(base_path + ".pool", "r", encoding="utf-8") as f:
+            return [ln.strip() for ln in f if ln.strip()]
+    except Exception:
+        return []
+
+
 def _cleanup_session_files(base_path: str):
     """Remove session files from disk."""
     suffixes = [".session", ".session-journal", ".session-wal",
-                ".session-shm", ".proxy"]
+                ".session-shm", ".proxy", ".pool"]
     for suffix in suffixes:
         path = base_path + suffix
         if os.path.exists(path):
