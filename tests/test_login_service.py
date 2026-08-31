@@ -1,4 +1,5 @@
 import asyncio
+import os
 import sys
 import tempfile
 import types
@@ -32,6 +33,35 @@ class _TdataSlowClient:
 
     async def disconnect(self):
         self.disconnected = True
+
+
+class _TdataCandidateClient:
+    attempts = []
+    dead = set()
+
+    def __init__(self, *args, **kwargs):
+        self.proxy = kwargs["proxy"]
+        self.session = types.SimpleNamespace(
+            dc_id=2,
+            server_address="127.0.0.1",
+            port=443,
+        )
+        type(self).attempts.append(self.proxy)
+
+    async def connect(self):
+        if self.proxy in type(self).dead:
+            raise OSError("proxy unavailable")
+
+    async def disconnect(self):
+        return None
+
+    async def ToTDesktop(self, flag):
+        class _TDesktop:
+            def SaveTData(self, directory):
+                with open(f"{directory}/key_data", "wb") as output:
+                    output.write(b"tdata")
+
+        return _TDesktop()
 
 
 class _FailingClient:
@@ -235,6 +265,112 @@ class LoginServiceTests(unittest.IsolatedAsyncioTestCase):
                 "session", "+123", "")
 
         self.assertIsNone(result)
+
+    async def test_tdata_conversion_falls_back_to_pool_proxy(self):
+        dead = "socks5://dead.example:1080"
+        alive = "socks5://alive.example:1080"
+        fake_td = types.ModuleType("opentele.td")
+        fake_td.TDesktop = object
+        fake_tl = types.ModuleType("opentele.tl")
+        fake_tl.TelegramClient = _TdataCandidateClient
+        fake_api = types.ModuleType("opentele.api")
+        fake_api.UseCurrentSession = object()
+        fake_root = types.ModuleType("opentele")
+        fake_root.__path__ = []
+
+        _TdataCandidateClient.attempts = []
+        _TdataCandidateClient.dead = {dead}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            session_path = f"{temp_dir}/tdata.session"
+            with open(session_path, "w", encoding="utf-8"):
+                pass
+            with patch.dict(
+                sys.modules,
+                {
+                    "opentele": fake_root,
+                    "opentele.td": fake_td,
+                    "opentele.tl": fake_tl,
+                    "opentele.api": fake_api,
+                },
+            ), patch.object(
+                login_service,
+                "get_session_file_path",
+                return_value=session_path,
+            ), patch.object(
+                login_service,
+                "_load_session_proxy",
+                return_value=dead,
+            ), patch.object(
+                login_service,
+                "_parse_proxy",
+                side_effect=lambda value: value or None,
+            ), patch.object(
+                login_service,
+                "_SESSIONS_DIR",
+                temp_dir,
+            ):
+                result = await login_service.get_tdata_zip_path(
+                    "session", "+123", "", proxy_pool=[alive])
+
+            self.assertIsNotNone(result)
+            self.assertTrue(result.endswith("_tdata.zip"))
+            self.assertTrue(os.path.exists(result))
+
+        self.assertEqual(_TdataCandidateClient.attempts, [dead, alive])
+
+    async def test_tdata_proxy_session_never_falls_back_to_direct(self):
+        proxy = "socks5://user-abc:hunter2@dc.oxylabs.io:8823"
+        alternate = "socks5://backup.example:1080"
+        fake_td = types.ModuleType("opentele.td")
+        fake_td.TDesktop = object
+        fake_tl = types.ModuleType("opentele.tl")
+        fake_tl.TelegramClient = _TdataCandidateClient
+        fake_api = types.ModuleType("opentele.api")
+        fake_api.UseCurrentSession = object()
+        fake_root = types.ModuleType("opentele")
+        fake_root.__path__ = []
+
+        _TdataCandidateClient.attempts = []
+        _TdataCandidateClient.dead = {proxy, alternate}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            session_path = f"{temp_dir}/tdata.session"
+            with open(session_path, "w", encoding="utf-8"):
+                pass
+            with patch.dict(
+                sys.modules,
+                {
+                    "opentele": fake_root,
+                    "opentele.td": fake_td,
+                    "opentele.tl": fake_tl,
+                    "opentele.api": fake_api,
+                },
+            ), patch.object(
+                login_service,
+                "get_session_file_path",
+                return_value=session_path,
+            ), patch.object(
+                login_service,
+                "_load_session_proxy",
+                return_value=proxy,
+            ), patch.object(
+                login_service,
+                "_parse_proxy",
+                side_effect=lambda value: value or None,
+            ), patch.object(
+                login_service,
+                "_SESSIONS_DIR",
+                temp_dir,
+            ), self.assertLogs(login_service.logger, "WARNING") as logs:
+                result = await login_service.get_tdata_zip_path(
+                    "session", "+123", "", proxy=proxy,
+                    proxy_pool=[alternate])
+
+        self.assertIsNone(result)
+        self.assertNotIn("", _TdataCandidateClient.attempts)
+        logged = "\n".join(logs.output)
+        self.assertIn("+123", logged)
+        self.assertIn("dc.oxylabs.io:8823", logged)
+        self.assertNotIn("hunter2", logged)
 
     async def test_check_session_proxy_session_never_tries_direct(self):
         attempted = []

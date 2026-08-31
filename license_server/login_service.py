@@ -114,6 +114,9 @@ _proxy_health: dict[str, dict[str, float | int]] = {}
 # below that deadline so the API can return a useful HTTP 500 instead of
 # continuing after nginx has recorded a client disconnect.
 _TDATA_TOTAL_TIMEOUT = 45
+# tdata 转换先用登录代理，连不上再按池顺序换出口。45s 预算、每次连接约 10s，
+# 大约还能多试三个。
+_TDATA_MAX_POOL_CANDIDATES = 3
 
 # Some hosts can only reach Telegram's data centers over IPv6 (their IPv4 route
 # to the DC ranges is blocked), which makes every direct connection attempt time
@@ -933,7 +936,9 @@ def get_session_file_path(session_id: str, phone: str, license_key: str = "") ->
     return None
 
 
-async def get_tdata_zip_path(session_id: str, phone: str, license_key: str = "") -> Optional[str]:
+async def get_tdata_zip_path(session_id: str, phone: str, license_key: str = "",
+                             proxy: str = "",
+                             proxy_pool: Optional[list] = None) -> Optional[str]:
     """Convert the session to tdata format and return the zip path."""
     import tempfile
     import shutil
@@ -972,22 +977,63 @@ async def get_tdata_zip_path(session_id: str, phone: str, license_key: str = "")
             base_session_path = base_session_path[:-8]
 
         login_proxy = _load_session_proxy(base_session_path)
-        client_kwargs = {
-            "proxy": _parse_proxy(login_proxy),
-            "timeout": _CONNECT_TIMEOUT,
-            "connection_retries": _LOGIN_CONNECT_RETRIES,
-            "retry_delay": 0,
-            "use_ipv6": _USE_IPV6 and not login_proxy,
-        }
-        client = OTelegramClient(base_session_path, **client_kwargs)
-        if client_kwargs["use_ipv6"]:
-            _remap_session_dc_to_ipv6(client)
-        elif login_proxy:
-            _remap_session_dc_to_ipv4(client)
+        candidates = _filter_cooled_candidates(
+            _build_candidates(
+                proxy,
+                login_proxy,
+                pool=proxy_pool,
+                include_direct=not bool(login_proxy),
+                pool_cap=_TDATA_MAX_POOL_CANDIDATES,
+            ))
+
+        last_conn_err = None
+        tried = 0
+        for cand in candidates:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            tried += 1
+            use_ipv6 = _USE_IPV6 and not cand
+            attempt = OTelegramClient(
+                base_session_path,
+                proxy=_parse_proxy(cand),
+                timeout=_CONNECT_TIMEOUT,
+                connection_retries=_LOGIN_CONNECT_RETRIES,
+                retry_delay=0,
+                use_ipv6=use_ipv6,
+            )
+            if use_ipv6:
+                _remap_session_dc_to_ipv6(attempt)
+            elif cand:
+                _remap_session_dc_to_ipv4(attempt)
+            try:
+                await asyncio.wait_for(
+                    attempt.connect(),
+                    timeout=min(_CONNECT_TIMEOUT + 2, max(1.0, remaining)),
+                )
+            except Exception as e:
+                last_conn_err = e
+                _record_proxy_failure(cand)
+                try:
+                    await asyncio.wait_for(attempt.disconnect(), timeout=5)
+                except Exception:
+                    pass
+                continue
+            _clear_proxy_failure(cand)
+            client = attempt
+            break
+
+        if client is None:
+            logger.warning(
+                "tdata conversion for %s: 尝试 %d 个出口全部连接失败 [%s]: %s",
+                phone, tried,
+                ", ".join(_mask_proxy(c) for c in candidates[:tried]),
+                last_conn_err,
+            )
+            return None
 
         try:
             async def convert():
-                await client.connect()
                 tdesk = await client.ToTDesktop(flag=UseCurrentSession)
                 tdesk.SaveTData(tdata_dir)
 
