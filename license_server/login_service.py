@@ -48,6 +48,12 @@ _SEND_CODE_COOLDOWN = 60
 # candidate and rely on the ordered list (bound proxy -> a few pool alternates
 # -> direct) for resilience.
 _CONNECT_TIMEOUT = 8   # seconds per connection attempt
+# The login and tdata paths run a few dozen times an hour, so they can afford a
+# long per-attempt timeout. Measured against the Oxylabs gateway this
+# deployment uses: a handshake that eventually succeeds takes 3-14s while the
+# gateway is degraded (0.4s when healthy), so the 8s check_session timeout
+# aborts connections that would have worked and reports every egress as dead.
+_LOGIN_CONNECT_TIMEOUT = 15
 _CONNECT_RETRIES = 1   # attempts per candidate before moving to the next
 _MAX_API_ID = 2_147_483_647
 # Telethon reuses ``connection_retries`` for reconnects that happen *inside* a
@@ -108,14 +114,22 @@ _PROXY_FAILURE_THRESHOLD = 5
 _PROXY_COOLDOWN = 120
 _PROXY_FAILURE_DECAY_WINDOW = 300
 _proxy_health: dict[str, dict[str, float | int]] = {}
+# Egresses that connected recently are tried before untested ones and before
+# ones with recorded failures. The gateway fails in bursts that hit the whole
+# pool at once, so a longer cooldown would only cool every candidate at the
+# same time; ordering by observed health is what actually helps.
+_PROXY_SUCCESS_WINDOW = 300
+_proxy_last_success: dict[str, float] = {}
 
-# The desktop client gives up after 60s while downloading tdata. Keep the
-# complete conversion, including the Telegram connection and archive creation,
-# below that deadline so the API can return a useful HTTP 500 instead of
-# continuing after nginx has recorded a client disconnect.
-_TDATA_TOTAL_TIMEOUT = 45
-# tdata 转换先用登录代理，连不上再按池顺序换出口。45s 预算、每次连接约 10s，
-# 大约还能多试三个。
+# The desktop client gives up after 60s while downloading tdata, so 55s is the
+# largest useful server budget before the client disconnects. Keep the complete
+# conversion, including the Telegram connection and archive creation, below
+# that deadline so the API can return a useful HTTP 500. With a 17s
+# per-attempt cap, this leaves room for two slow egress attempts plus conversion
+# and archive creation.
+_TDATA_TOTAL_TIMEOUT = 55
+# tdata 转换先用登录代理，连不上再按池顺序换出口。55s 预算、每次连接约 17s，
+# 还能试两个慢出口并完成转换和压缩。
 _TDATA_MAX_POOL_CANDIDATES = 3
 
 # Some hosts can only reach Telegram's data centers over IPv6 (their IPv4 route
@@ -166,7 +180,8 @@ def _parse_proxy(proxy_str: str) -> Optional[tuple]:
 
 def _make_client(session: str, api_id: int, api_hash: str, cand: str,
                  device_model: Optional[str] = None,
-                 retries: int = _CONNECT_RETRIES) -> "TelegramClient":
+                 retries: int = _CONNECT_RETRIES,
+                 timeout: int = _CONNECT_TIMEOUT) -> "TelegramClient":
     """Build a Telethon client for one egress candidate that fails fast.
 
     A short per-attempt timeout and a single connection attempt keep a dead
@@ -177,7 +192,7 @@ def _make_client(session: str, api_id: int, api_hash: str, cand: str,
         api_id=api_id,
         api_hash=api_hash,
         proxy=proxy,
-        timeout=_CONNECT_TIMEOUT,
+        timeout=timeout,
         connection_retries=retries,
         retry_delay=0,
         use_ipv6=_USE_IPV6 and proxy is None,
@@ -244,11 +259,15 @@ def _remap_session_dc_to_ipv6(client: "TelegramClient") -> None:
 
 def _build_candidates(*ordered: str, pool: Optional[list] = None,
                       include_direct: bool = True,
-                      pool_cap: Optional[int] = None) -> list[str]:
+                      pool_cap: Optional[int] = None,
+                      prefer_healthy: bool = False) -> list[str]:
     """De-duplicated egress order: the given fixed candidates, then a capped
     slice of the pool, optionally followed by a direct connection."""
     cap = _MAX_POOL_CANDIDATES if pool_cap is None else pool_cap
-    capped_pool = list(pool or [])[:cap]
+    pool_list = list(pool or [])
+    if prefer_healthy:
+        pool_list = sorted(pool_list, key=_proxy_health_rank)
+    capped_pool = pool_list[:cap]
     candidates: list[str] = []
     all_candidates = (*ordered, *capped_pool)
     if include_direct:
@@ -329,6 +348,21 @@ def _record_proxy_failure(proxy: str) -> None:
 def _clear_proxy_failure(proxy: str) -> None:
     if proxy:
         _proxy_health.pop(proxy, None)
+        _proxy_last_success[proxy] = time.monotonic()
+
+
+def _proxy_health_rank(proxy: str) -> int:
+    """Sort key for pool ordering: recent success first, then untested, then
+    candidates with recorded failures."""
+    if not proxy:
+        return 1
+    now = time.monotonic()
+    last_success = _proxy_last_success.get(proxy)
+    if last_success is not None:
+        if now - last_success <= _PROXY_SUCCESS_WINDOW:
+            return 0
+        _proxy_last_success.pop(proxy, None)
+    return 2 if proxy in _proxy_health else 1
 
 
 def _mask_proxy(proxy: str) -> str:
@@ -474,6 +508,7 @@ async def send_code(
             pool=proxy_pool,
             include_direct=not proxy_configured,
             pool_cap=_SEND_CODE_MAX_POOL_CANDIDATES,
+            prefer_healthy=True,
         ))
     if proxy_configured:
         direct_reserve = 0
@@ -495,10 +530,11 @@ async def send_code(
         tried += 1
         c = _make_client(sess_path, api_id, api_hash, cand,
                          device_model=device_model or "Desktop Client",
-                         retries=_LOGIN_CONNECT_RETRIES)
+                         retries=_LOGIN_CONNECT_RETRIES,
+                         timeout=_LOGIN_CONNECT_TIMEOUT)
         try:
             cap = remaining if is_last else remaining - direct_reserve
-            per_cand = min(_CONNECT_TIMEOUT + 2, max(1.0, cap))
+            per_cand = min(_LOGIN_CONNECT_TIMEOUT + 2, max(1.0, cap))
             await asyncio.wait_for(c.connect(), timeout=per_cand)
         except Exception as e:
             # This egress could not reach Telegram (proxy down / network).
@@ -989,6 +1025,7 @@ async def get_tdata_zip_path(session_id: str, phone: str, license_key: str = "",
                 pool=pool,
                 include_direct=not bool(login_proxy),
                 pool_cap=_TDATA_MAX_POOL_CANDIDATES,
+                prefer_healthy=True,
             ))
 
         last_conn_err = None
@@ -1002,7 +1039,7 @@ async def get_tdata_zip_path(session_id: str, phone: str, license_key: str = "",
             attempt = OTelegramClient(
                 base_session_path,
                 proxy=_parse_proxy(cand),
-                timeout=_CONNECT_TIMEOUT,
+                timeout=_LOGIN_CONNECT_TIMEOUT,
                 connection_retries=_LOGIN_CONNECT_RETRIES,
                 retry_delay=0,
                 use_ipv6=use_ipv6,
@@ -1014,7 +1051,8 @@ async def get_tdata_zip_path(session_id: str, phone: str, license_key: str = "",
             try:
                 await asyncio.wait_for(
                     attempt.connect(),
-                    timeout=min(_CONNECT_TIMEOUT + 2, max(1.0, remaining)),
+                    timeout=min(_LOGIN_CONNECT_TIMEOUT + 2,
+                                max(1.0, remaining)),
                 )
             except Exception as e:
                 last_conn_err = e
