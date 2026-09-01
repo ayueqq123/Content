@@ -37,10 +37,12 @@ class _TdataSlowClient:
 
 class _TdataCandidateClient:
     attempts = []
+    timeouts = []
     dead = set()
 
     def __init__(self, *args, **kwargs):
         self.proxy = kwargs["proxy"]
+        type(self).timeouts.append(kwargs["timeout"])
         self.session = types.SimpleNamespace(
             dc_id=2,
             server_address="127.0.0.1",
@@ -96,6 +98,7 @@ class _FakeSession:
 class LoginServiceTests(unittest.IsolatedAsyncioTestCase):
     def tearDown(self):
         login_service._proxy_health.clear()
+        login_service._proxy_last_success.clear()
 
     def test_cooling_proxy_is_skipped_but_direct_remains(self):
         login_service._proxy_health["bad"] = {
@@ -164,6 +167,45 @@ class LoginServiceTests(unittest.IsolatedAsyncioTestCase):
                 pool_cap=login_service._SEND_CODE_MAX_POOL_CANDIDATES),
             ["bound"] + pool,
         )
+
+    def test_build_candidates_prefers_recently_successful_pool_proxy(self):
+        pool = ["a", "b", "c"]
+        login_service._clear_proxy_failure("c")
+
+        self.assertEqual(
+            login_service._build_candidates(
+                pool=pool, include_direct=False, pool_cap=2,
+                prefer_healthy=True),
+            ["c", "a"],
+        )
+
+    def test_build_candidates_default_pool_order_is_unchanged(self):
+        pool = ["a", "b", "c"]
+        login_service._clear_proxy_failure("c")
+
+        self.assertEqual(
+            login_service._build_candidates(
+                pool=pool, include_direct=False, pool_cap=2),
+            ["a", "b"],
+        )
+
+    def test_build_candidates_puts_failed_proxy_after_untested_proxy(self):
+        login_service._record_proxy_failure("a")
+
+        self.assertEqual(
+            login_service._build_candidates(
+                pool=["a", "b"], include_direct=False,
+                pool_cap=2, prefer_healthy=True),
+            ["b", "a"],
+        )
+
+    def test_proxy_health_rank_discards_stale_success(self):
+        login_service._proxy_last_success["stale"] = (
+            time.monotonic() - login_service._PROXY_SUCCESS_WINDOW - 1
+        )
+
+        self.assertEqual(login_service._proxy_health_rank("stale"), 1)
+        self.assertNotIn("stale", login_service._proxy_last_success)
 
     def test_request_budget_respects_small_reported_timeout(self):
         budget, _ = login_service._request_budget(12)
@@ -265,6 +307,49 @@ class LoginServiceTests(unittest.IsolatedAsyncioTestCase):
                 "session", "+123", "")
 
         self.assertIsNone(result)
+
+    async def test_tdata_conversion_uses_login_connect_timeout(self):
+        fake_td = types.ModuleType("opentele.td")
+        fake_td.TDesktop = object
+        fake_tl = types.ModuleType("opentele.tl")
+        fake_tl.TelegramClient = _TdataCandidateClient
+        fake_api = types.ModuleType("opentele.api")
+        fake_api.UseCurrentSession = object()
+        fake_root = types.ModuleType("opentele")
+        fake_root.__path__ = []
+
+        _TdataCandidateClient.attempts = []
+        _TdataCandidateClient.timeouts = []
+        _TdataCandidateClient.dead = set()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            session_path = f"{temp_dir}/tdata.session"
+            with open(session_path, "w", encoding="utf-8"):
+                pass
+            with patch.dict(
+                sys.modules,
+                {
+                    "opentele": fake_root,
+                    "opentele.td": fake_td,
+                    "opentele.tl": fake_tl,
+                    "opentele.api": fake_api,
+                },
+            ), patch.object(
+                login_service,
+                "get_session_file_path",
+                return_value=session_path,
+            ), patch.object(
+                login_service,
+                "_SESSIONS_DIR",
+                temp_dir,
+            ):
+                result = await login_service.get_tdata_zip_path(
+                    "session", "+123", "")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(
+            _TdataCandidateClient.timeouts,
+            [login_service._LOGIN_CONNECT_TIMEOUT],
+        )
 
     async def test_tdata_conversion_falls_back_to_pool_proxy(self):
         dead = "socks5://dead.example:1080"
@@ -653,6 +738,51 @@ class LoginServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertGreater(login_service._LOGIN_CONNECT_RETRIES,
                            login_service._CONNECT_RETRIES)
+
+    async def test_check_session_uses_default_connect_timeout(self):
+        captured = []
+
+        def fake_client(session, **kwargs):
+            captured.append(kwargs)
+
+            class _CheckClient:
+                def __init__(self):
+                    self.session = _FakeSession(2, "149.154.167.51")
+
+                async def connect(self):
+                    return None
+
+                async def get_me(self):
+                    return object()
+
+                async def disconnect(self):
+                    return None
+
+            return _CheckClient()
+
+        with patch.object(login_service, "TelegramClient", fake_client):
+            with tempfile.TemporaryDirectory() as temp_dir:
+                session_path = f"{temp_dir}/proxy-session_123.session"
+                with open(session_path, "w", encoding="utf-8"):
+                    pass
+                with patch.object(login_service, "_SESSIONS_DIR", temp_dir), \
+                        patch.object(
+                            login_service,
+                            "_load_session_proxy",
+                            return_value="socks5://p:1080",
+                        ):
+                    result = await login_service.check_session_valid(
+                        phone="+123",
+                        api_id=1,
+                        api_hash="hash",
+                        proxy="socks5://p:1080",
+                    )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(
+            captured[0]["timeout"],
+            login_service._CONNECT_TIMEOUT,
+        )
 
     def test_ipv6_session_dc_is_remapped_back_to_ipv4(self):
         client = types.SimpleNamespace(
