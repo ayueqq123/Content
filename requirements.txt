@@ -5,3 +5,4 @@ python-socks[asyncio]>=2.0
 python-dotenv>=1.0
 qasync>=0.27
 httpx>=0.24.0
+certifi>=2024.2.2
