@@ -7,6 +7,10 @@ and all bots are started in parallel, sharing the same handler logic.
 import asyncio
 import os
 import logging
+import re
+import ssl
+
+import certifi
 from aiogram import Bot, Dispatcher
 from aiogram.types import FSInputFile
 from aiogram.client.session.aiohttp import AiohttpSession
@@ -24,6 +28,19 @@ _NETWORK_HINT = (
     "无法连接 api.telegram.org（网络被拦截或代理不可用）"
     "— 请在「代理设置」填写单个代理，或在「代理文件 / 代理池」中提供可用代理"
 )
+
+
+def _mask_proxy(url: str) -> str:
+    return re.sub(r"(://[^:@/]+:)[^@]+@", r"\1***@", url)
+
+
+class _CertifiAiohttpSession(AiohttpSession):
+    """AiohttpSession that keeps the certifi CA bundle when a proxy is configured."""
+
+    def _setup_proxy_connector(self, proxy) -> None:
+        super()._setup_proxy_connector(proxy)
+        self._connector_init.setdefault(
+            "ssl", ssl.create_default_context(cafile=certifi.where()))
 
 
 def _bot_proxy_url(index: int, proxy: str, proxy_list: list[str]) -> str:
@@ -169,14 +186,19 @@ class BotRunner:
             bot = None
             proxy_url = _bot_proxy_url(i, proxy, proxy_list)
             try:
-                session = AiohttpSession(proxy=proxy_url) if proxy_url else None
+                session = (
+                    _CertifiAiohttpSession(proxy=proxy_url) if proxy_url else None
+                )
                 bot = Bot(token=token, session=session)
 
                 # Validate token
                 me = await bot.get_me()
                 bot._me = me
                 label = f"@{me.username}" if me.username else f"Bot#{i+1}"
-                logger.info(f"Bot 已连接: {label} (代理: {proxy_url or '直连'})")
+                logger.info(
+                    f"Bot 已连接: {label} "
+                    f"(代理: {_mask_proxy(proxy_url) if proxy_url else '直连'})"
+                )
 
                 try:
                     await bot.delete_webhook(drop_pending_updates=True)
@@ -215,8 +237,22 @@ class BotRunner:
                 short_token = token[:8] + "..."
                 if "unauthorized" in err_msg.lower():
                     errors.append(f"Token {short_token} 无效 (Unauthorized)")
+                elif "certificate" in err_msg.lower() or "ssl" in err_msg.lower():
+                    via = (
+                        f"（当前代理: {_mask_proxy(proxy_url)}）"
+                        if proxy_url
+                        else "（当前未使用代理）"
+                    )
+                    errors.append(
+                        f"Token {short_token} 启动失败: "
+                        f"TLS 证书校验失败（{type(e).__name__}: {err_msg}）{via}"
+                    )
                 elif _is_network_error(e):
-                    via = f"（当前代理: {proxy_url}）" if proxy_url else "（当前未使用代理）"
+                    via = (
+                        f"（当前代理: {_mask_proxy(proxy_url)}）"
+                        if proxy_url
+                        else "（当前未使用代理）"
+                    )
                     errors.append(f"Token {short_token} 启动失败: {_NETWORK_HINT}{via}")
                 else:
                     errors.append(f"Token {short_token} 启动失败: {err_msg}")
@@ -239,7 +275,11 @@ class BotRunner:
         self._running = True
 
         if errors:
-            logger.warning(f"{len(errors)} 个 Bot 启动失败, {len(self._instances)} 个成功")
+            summary = (
+                f"{len(self._instances)} 个 Bot 已启动，{len(errors)} 个失败:\n"
+                + "\n".join(errors)
+            )
+            logger.warning(summary)
             return ""  # Partial success — don't block, already logged
 
         return ""
