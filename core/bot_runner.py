@@ -12,6 +12,7 @@ import ssl
 
 import certifi
 from aiogram import Bot, Dispatcher
+from aiogram.exceptions import TelegramNetworkError, TelegramRetryAfter
 from aiogram.types import FSInputFile
 from aiogram.client.session.aiohttp import AiohttpSession
 
@@ -311,12 +312,14 @@ class BotRunner:
         """Manual polling loop for one bot instance."""
         offset: int | None = None
         allowed = ["message", "callback_query", "edited_message"]
+        transient_errors = 0
         logger.info(f"{inst.label} 开始轮询...")
         try:
             while True:
                 try:
                     updates = await inst.bot.get_updates(
                         offset=offset, timeout=30, allowed_updates=allowed)
+                    transient_errors = 0
                     if updates:
                         logger.info(f"{inst.label} 收到 {len(updates)} 条消息")
                     for update in updates:
@@ -327,6 +330,19 @@ class BotRunner:
                         asyncio.create_task(self._dispatch_update(inst, update))
                 except asyncio.CancelledError:
                     raise
+                except TelegramRetryAfter as e:
+                    # Telegram 限流：按其要求的时间等待后继续轮询。
+                    await asyncio.sleep(int(e.retry_after) + 1)
+                except TelegramNetworkError as e:
+                    # 长轮询连接被网络/代理中途掐断（ServerDisconnected、读超时等）：
+                    # 属可恢复故障，自动重试即可，无需刷屏报错。
+                    transient_errors += 1
+                    if transient_errors == 1 or transient_errors % 20 == 0:
+                        logger.warning(
+                            f"{inst.label} 轮询连接被断开（{e}），自动重试中"
+                            f"（第 {transient_errors} 次）；持续出现请检查该机代理/网络"
+                        )
+                    await asyncio.sleep(3)
                 except Exception as e:
                     err = str(e).lower()
                     if "unauthorized" in err:
