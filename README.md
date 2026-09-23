@@ -100,6 +100,9 @@ Content/
 │   ├── requirements.txt       # 服务端依赖
 │   ├── static/index.html      # 管理后台 Web UI
 │   └── sessions/              # 服务端 Session 文件目录
+├── tools/
+│   ├── check_proxies.py       # 代理到 Telegram DC 连通性检测
+│   └── session_to_tdata.py    # .session 转 tdata zip 工具
 └── sessions/                  # 客户端 Session 文件目录
 ```
 
@@ -197,6 +200,18 @@ print(decrypt(blob))  # → my_secret_value
 - **登录 / session 校验** 时，如果分配到的代理连不上，服务端会自动改用**直连**完成本次请求（登录阶段：代理 → 直连；校验阶段：请求代理 → 登录代理 → 直连），不会因为代理死掉而登录失败或误报 session 失效。
 - 退回直连会让该账号的出口 IP 变成**服务器的直连 IP**，请知悉（相当于该账号临时不走代理）。
 - 在「登录成功设置」里勾选 **代理失效（自动退回直连）时发送通知到群** 后，一旦发生退回直连，会向「登录成功上传到群」配置的群发送一条代理失效通知（含手机号、失效代理、时间）。
+
+## Session 转 tdata 工具
+
+登录时服务端会自动把 session 转成 tdata 下发；转换失败时客户端只拿到 `.session` 文件。可用 `tools/session_to_tdata.py` 在本地补齐转换（依赖服务端环境的 `telethon` + `opentele`）：
+
+```bash
+pip install telethon opentele
+python -m tools.session_to_tdata sessions/13800000000.session
+python -m tools.session_to_tdata sessions/ --proxy socks5://user:pass@host:port   # 批量转换
+```
+
+转换需要连一次 Telegram（`UseCurrentSession`，不换号不挤号），输出 `<手机号>_<时间戳>_tdata.zip`。
 
 ## 卡密系统
 
