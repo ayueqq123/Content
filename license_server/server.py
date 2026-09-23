@@ -11,13 +11,21 @@ Environment variables:
 """
 
 import os
+import re
 import time
+import json
 import secrets
+import shutil
 import sqlite3
 import logging
+import tempfile
+from datetime import datetime
 from typing import Any
 
-from fastapi import FastAPI, Request, HTTPException, Depends, status
+from fastapi import (
+    FastAPI, Request, HTTPException, Depends, status,
+    UploadFile, File, Form, BackgroundTasks,
+)
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -314,6 +322,62 @@ async def api_login_download_tdata(body: RemoteSessionRequest):
         proxy=body.proxy, proxy_pool=body.proxy_pool)
     if not zip_path:
         raise HTTPException(500, "tdata 转换失败或 session 不存在")
+    return FileResponse(
+        zip_path,
+        media_type="application/zip",
+        filename=os.path.basename(zip_path),
+    )
+
+
+_MAX_SESSION_UPLOAD = 5 * 1024 * 1024  # .session files are a few KB
+
+
+@app.post("/api/login/convert_tdata")
+async def api_login_convert_tdata(
+    background_tasks: BackgroundTasks,
+    session_file: UploadFile = File(...),
+    license_key: str = Form(""),
+    hwid: str = Form(""),
+    proxy: str = Form(""),
+    proxy_pool: str = Form(""),
+):
+    """Upload a .session file; convert it to tdata and return the zip."""
+    if not _verify_license(license_key, hwid):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "卡密无效或已过期")
+
+    data = await session_file.read()
+    if not data:
+        raise HTTPException(400, "空文件")
+    if len(data) > _MAX_SESSION_UPLOAD:
+        raise HTTPException(400, "文件过大")
+
+    try:
+        pool = json.loads(proxy_pool) if proxy_pool else []
+        if not isinstance(pool, list):
+            pool = []
+    except Exception:
+        pool = [p.strip() for p in proxy_pool.splitlines() if p.strip()]
+
+    name = os.path.basename(session_file.filename or "session")
+    if name.endswith(".session"):
+        stem = name[:-8]
+    else:
+        stem = name
+        name += ".session"
+    stem = re.sub(r"[^\w+@.-]", "", stem) or "session"
+
+    work_dir = tempfile.mkdtemp()
+    background_tasks.add_task(shutil.rmtree, work_dir, True)
+    sess_path = os.path.join(work_dir, name)
+    with open(sess_path, "wb") as f:
+        f.write(data)
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    zip_path = await login_service.convert_session_file_to_tdata(
+        sess_path, work_dir, f"{stem}_{ts}_tdata",
+        label=stem, proxy=proxy, proxy_pool=pool)
+    if not zip_path:
+        raise HTTPException(500, "tdata 转换失败（session 无效或无法连接 Telegram）")
     return FileResponse(
         zip_path,
         media_type="application/zip",

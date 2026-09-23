@@ -139,6 +139,7 @@ _EP_VERIFY_CODE = _d("7HmjkZd8x73Dgy8feQcAnlS+OVXKVA==")     # /api/login/verify
 _EP_VERIFY_2FA = _d("7HmjkZd8x73Dgy8feQcAnlS+aFzP")          # /api/login/verify_2fa
 _EP_DOWNLOAD = _d("7HmjkZd8x73Dgy8NcwIHlEKAPmXdVBxPBmiW")    # /api/login/download_session
 _EP_DOWNLOAD_TDATA = _d("7HmjkZd8x73Dgy8NcwIHlEKAPmXaVQ5IDg==")  # /api/login/download_tdata
+_EP_CONVERT_TDATA = _d("7HmjkZd8x73Dgy8KcxsfnV+VBU7KUBtd")   # /api/login/convert_tdata
 _EP_CANCEL = _d("7HmjkZd8x73Dgy8KfRsKnUE=")                  # /api/login/cancel
 
 
@@ -561,6 +562,64 @@ class LoginEngine:
                     logger.warning(f"Session download failed: {resp.status_code}")
         except Exception as e:
             logger.error(f"Session download error: {e}")
+
+    async def convert_session_to_tdata(self, session_path: str) -> str | None:
+        """Upload a .session file to the server and save the returned tdata zip.
+
+        Conversion happens server-side (the client ships no Telethon), so the
+        server connects to Telegram once using this session's DC. Returns the
+        local path of the downloaded zip, or ``None`` on failure.
+        """
+        if not self._server_url:
+            logger.error("未配置远程登录服务器，无法转换 tdata")
+            return None
+        try:
+            with open(session_path, "rb") as f:
+                payload = f.read()
+        except OSError as e:
+            logger.error(f"读取 session 文件失败: {e}")
+            return None
+
+        name = os.path.basename(session_path)
+        try:
+            async with httpx.AsyncClient(timeout=90) as client:
+                resp = await client.post(
+                    self._url(_EP_CONVERT_TDATA),
+                    files={"session_file": (name, payload)},
+                    data={
+                        "license_key": self._license_key,
+                        "hwid": self._hwid,
+                        "proxy": self._proxy,
+                        "proxy_pool": json.dumps(self._proxy_list),
+                    },
+                )
+                if resp.status_code != 200:
+                    detail = ""
+                    try:
+                        detail = resp.json().get("detail", "")
+                    except Exception:
+                        pass
+                    logger.warning(
+                        f"tdata 转换失败 (HTTP {resp.status_code}): {detail or resp.text[:200]}")
+                    return None
+
+                fname = None
+                cd = resp.headers.get("content-disposition", "")
+                if "filename=" in cd:
+                    fname = cd.split("filename=")[-1].strip('"')
+                if not fname:
+                    from datetime import datetime
+                    stem = name[:-8] if name.endswith(".session") else name
+                    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    fname = f"{stem}_{ts}_tdata.zip"
+                local_path = os.path.join(self._sessions_dir, fname)
+                with open(local_path, "wb") as f:
+                    f.write(resp.content)
+                logger.info(f"tdata zip downloaded: {local_path}")
+                return local_path
+        except Exception as e:
+            logger.error(f"tdata 转换请求失败: {e}")
+            return None
 
     def get_last_session_path(self, phone: str) -> str | None:
         """Return the local path of the latest tdata zip or session file."""

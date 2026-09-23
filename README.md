@@ -203,7 +203,10 @@ print(decrypt(blob))  # → my_secret_value
 
 ## Session 转 tdata 工具
 
-登录时服务端会自动把 session 转成 tdata 下发；转换失败时客户端只拿到 `.session` 文件。可用 `tools/session_to_tdata.py` 在本地补齐转换（依赖服务端环境的 `telethon` + `opentele`）：
+登录时服务端会自动把 session 转成 tdata 下发；转换失败时客户端只拿到 `.session` 文件。补齐转换有两种方式：
+
+- **GUI 按钮**：主界面「Session 转 tdata」——选择一个或多个 `.session` 文件，上传到服务端 `/api/login/convert_tdata`（需有效卡密）转换，tdata zip 自动保存到输出目录。
+- **本地工具** `tools/session_to_tdata.py`（依赖 `telethon` + `opentele`）：
 
 ```bash
 pip install telethon opentele
