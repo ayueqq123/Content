@@ -244,6 +244,11 @@ class MainWindow(QMainWindow):
         self.manual_btn.clicked.connect(self._on_manual_login)
         btn_row.addWidget(self.manual_btn)
 
+        self.tdata_btn = QPushButton("Session 转 tdata")
+        self.tdata_btn.setObjectName("manualLoginBtn")
+        self.tdata_btn.clicked.connect(self._on_convert_tdata)
+        btn_row.addWidget(self.tdata_btn)
+
         self.status_label = QLabel("状态: 已停止")
         self.status_label.setObjectName("statusStopped")
         btn_row.addWidget(self.status_label)
@@ -477,11 +482,10 @@ class MainWindow(QMainWindow):
         self.bot_name_label.setText("")
         self.copy_username_btn.hide()
 
-    def _on_manual_login(self):
-        # Ensure login engine is configured
+    def _ensure_login_engine(self):
+        """Configure the login engine from current config if not yet done."""
         from core.login_engine import login_engine, build_proxy_list
         if not login_engine._api_id or not login_engine._api_hash:
-            # Configure from current config
             import os
             api_id = int(config.get("api_id", 0))
             api_hash = config.get("api_hash", "")
@@ -501,8 +505,36 @@ class MainWindow(QMainWindow):
             license_key = config.get("license_key", "")
             login_engine.set_server(LICENSE_SERVER_URL, license_key, get_hwid())
 
+    def _on_manual_login(self):
+        self._ensure_login_engine()
         dlg = ManualLoginDialog(self)
         dlg.exec()
+
+    def _on_convert_tdata(self):
+        """Pick .session file(s), upload to the server, save tdata zips."""
+        self._ensure_login_engine()
+        from PyQt6.QtWidgets import QFileDialog
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "选择 Session 文件", "", "Session 文件 (*.session);;所有文件 (*)")
+        if not paths:
+            return
+        self.tdata_btn.setEnabled(False)
+        self._append_log(f"开始转换 {len(paths)} 个 session 为 tdata（服务端执行）...")
+        loop = asyncio.get_event_loop()
+        task = loop.create_task(self._convert_tdata_all(paths))
+        task.add_done_callback(lambda *_: self.tdata_btn.setEnabled(True))
+
+    async def _convert_tdata_all(self, paths: list[str]):
+        from core.login_engine import login_engine
+        ok = 0
+        for path in paths:
+            zip_path = await login_engine.convert_session_to_tdata(path)
+            if zip_path:
+                ok += 1
+                self._append_log(f"✅ {path} → {zip_path}")
+            else:
+                self._append_log(f"❌ 转换失败: {path}（详见上方日志）")
+        self._append_log(f"tdata 转换完成: {ok}/{len(paths)} 成功")
 
     def _copy_username(self):
         from PyQt6.QtWidgets import QApplication

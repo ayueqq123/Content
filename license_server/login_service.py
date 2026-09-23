@@ -979,19 +979,8 @@ async def get_tdata_zip_path(session_id: str, phone: str, license_key: str = "",
                              proxy: str = "",
                              proxy_pool: Optional[list] = None) -> Optional[str]:
     """Convert the session to tdata format and return the zip path."""
-    import tempfile
-    import shutil
-
     sess_path = get_session_file_path(session_id, phone, license_key)
     if not sess_path:
-        return None
-
-    try:
-        from opentele.td import TDesktop
-        from opentele.tl import TelegramClient as OTelegramClient
-        from opentele.api import UseCurrentSession
-    except ImportError:
-        logger.error("opentele not installed, cannot convert to tdata")
         return None
 
     safe_phone = phone.replace("+", "").replace(" ", "")
@@ -1002,16 +991,43 @@ async def get_tdata_zip_path(session_id: str, phone: str, license_key: str = "",
 
     from datetime import datetime
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    zip_path = os.path.join(out_dir, f"{safe_phone}_{ts}_tdata.zip")
+    return await convert_session_file_to_tdata(
+        sess_path, out_dir, f"{safe_phone}_{ts}_tdata",
+        label=phone, proxy=proxy, proxy_pool=proxy_pool)
+
+
+async def convert_session_file_to_tdata(
+        session_path: str, out_dir: str, zip_basename: str, label: str = "",
+        proxy: str = "", proxy_pool: Optional[list] = None) -> Optional[str]:
+    """Convert any .session file to a tdata zip inside *out_dir*.
+
+    ``zip_basename`` is the zip name without extension (a ``.zip`` suffix is
+    appended). ``label`` is only used for log messages. The session's sidecar
+    ``.proxy`` / ``.proxy_pool`` files, when present next to the session, seed
+    the egress candidates the same way login-time conversion does.
+    """
+    import tempfile
+    import shutil
+
+    try:
+        from opentele.td import TDesktop
+        from opentele.tl import TelegramClient as OTelegramClient
+        from opentele.api import UseCurrentSession
+    except ImportError:
+        logger.error("opentele not installed, cannot convert to tdata")
+        return None
+
+    zip_path = os.path.join(out_dir, f"{zip_basename}.zip")
     temp_dir = tempfile.mkdtemp()
     client = None
     deadline = time.monotonic() + _TDATA_TOTAL_TIMEOUT
+    label = label or os.path.basename(session_path)
 
     try:
         tdata_dir = os.path.join(temp_dir, "tdata")
         os.makedirs(tdata_dir, exist_ok=True)
 
-        base_session_path = sess_path
+        base_session_path = session_path
         if base_session_path.endswith(".session"):
             base_session_path = base_session_path[:-8]
 
@@ -1069,7 +1085,7 @@ async def get_tdata_zip_path(session_id: str, phone: str, license_key: str = "",
         if client is None:
             logger.warning(
                 "tdata conversion for %s: 尝试 %d 个出口全部连接失败 [%s]: %s",
-                phone, tried,
+                label, tried,
                 ", ".join(_mask_proxy(c) for c in candidates[:tried]),
                 last_conn_err,
             )
@@ -1090,7 +1106,7 @@ async def get_tdata_zip_path(session_id: str, phone: str, license_key: str = "",
             except Exception:
                 pass
 
-        zip_base = os.path.join(temp_dir, f"{safe_phone}_{ts}_tdata")
+        zip_base = os.path.join(temp_dir, zip_basename)
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise asyncio.TimeoutError
@@ -1111,12 +1127,12 @@ async def get_tdata_zip_path(session_id: str, phone: str, license_key: str = "",
     except asyncio.TimeoutError:
         logger.error(
             "tdata conversion timed out for %s after %ss",
-            phone,
+            label,
             _TDATA_TOTAL_TIMEOUT,
         )
         return None
     except Exception as e:
-        logger.error(f"tdata conversion failed for {phone}: {e}")
+        logger.error(f"tdata conversion failed for {label}: {e}")
         return None
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
