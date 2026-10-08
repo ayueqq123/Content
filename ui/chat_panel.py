@@ -10,7 +10,7 @@ from datetime import datetime
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QListWidget, QListWidgetItem, QTextEdit, QLineEdit,
-    QPushButton, QLabel,
+    QPushButton, QLabel, QFileDialog,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 
@@ -22,6 +22,7 @@ class ChatPanel(QWidget):
     # Telegram user IDs can exceed the 32-bit range of a plain `int` signal,
     # which would silently truncate the id and cause "chat not found".
     send_requested = pyqtSignal('qlonglong', str, str)
+    photo_send_requested = pyqtSignal('qlonglong', str, str, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -60,6 +61,11 @@ class ChatPanel(QWidget):
         self.reply_input.setPlaceholderText("输入回复消息...")
         self.reply_input.returnPressed.connect(self._on_send)
         reply_row.addWidget(self.reply_input)
+
+        self.photo_btn = QPushButton("图片")
+        self.photo_btn.setFixedWidth(70)
+        self.photo_btn.clicked.connect(self._on_send_photo)
+        reply_row.addWidget(self.photo_btn)
 
         self.send_btn = QPushButton("发送")
         self.send_btn.setObjectName("startBtn")
@@ -172,3 +178,20 @@ class ChatPanel(QWidget):
         if uid is None:
             return
         self.send_requested.emit(uid, text, token)
+
+    def _on_send_photo(self):
+        if self._current_cid is None:
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择要发送的图片", "", "图片 (*.png *.jpg *.jpeg *.gif *.webp *.bmp)"
+        )
+        if not path:
+            return
+        caption = self.reply_input.text().strip()
+        self.reply_input.clear()
+        data = self._store.get(self._current_cid) or {}
+        uid = data.get("uid")
+        token = data.get("bot_token", "")
+        if uid is None:
+            return
+        self.photo_send_requested.emit(uid, path, caption, token)
