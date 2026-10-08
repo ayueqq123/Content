@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 from datetime import datetime
 
 from PyQt6.QtWidgets import (
@@ -11,6 +12,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
 from PyQt6.QtGui import QTextCursor
+from aiogram.types import FSInputFile
 
 from core.config_manager import config
 from core.bot_runner import bot_runner
@@ -289,6 +291,7 @@ class MainWindow(QMainWindow):
         self.chat_panel = ChatPanel()
         self.chat_panel.hide()
         self.chat_panel.send_requested.connect(self._on_chat_send)
+        self.chat_panel.photo_send_requested.connect(self._on_chat_send_photo)
         ctrl_layout.addWidget(self.chat_panel)
 
         splitter.addWidget(ctrl_widget)
@@ -375,9 +378,39 @@ class MainWindow(QMainWindow):
         loop = asyncio.get_event_loop()
         loop.create_task(self._do_send_chat(bot, uid, text))
 
+    def _on_chat_send_photo(self, uid: int, path: str, caption: str, bot_token: str = ""):
+        bot = bot_runner.get_bot_by_token(bot_token) if bot_token else None
+        if bot is None:
+            self._append_log(f"❌ 该会话的 Bot（{bot_token[:8]}…）未运行，无法发送消息")
+            return
+        if not os.path.isfile(path):
+            self._append_log(f"❌ 图片不存在: {path}")
+            return
+        if os.path.getsize(path) > 10 * 1024 * 1024:
+            self._append_log("❌ 图片超过 10MB，Telegram 不支持以图片发送")
+            return
+
+        loop = asyncio.get_event_loop()
+        loop.create_task(self._do_send_chat(bot, uid, caption, photo_path=path))
+
     @staticmethod
-    async def _try_send(bot, uid: int, text: str):
-        """Send text via one bot, retrying without HTML if entity parsing fails."""
+    async def _try_send(bot, uid: int, text: str, photo_path: str = ""):
+        """Send a text or photo via one bot, retrying without HTML if parsing fails."""
+        if photo_path:
+            try:
+                await bot.send_photo(
+                    chat_id=uid, photo=FSInputFile(photo_path),
+                    caption=text or None, parse_mode="HTML",
+                )
+            except Exception as html_err:
+                if "parse" in str(html_err).lower() or "entit" in str(html_err).lower():
+                    await bot.send_photo(
+                        chat_id=uid, photo=FSInputFile(photo_path),
+                        caption=text or None, parse_mode=None,
+                    )
+                else:
+                    raise
+            return
         try:
             await bot.send_message(chat_id=uid, text=text, parse_mode="HTML")
         except Exception as html_err:
@@ -390,7 +423,7 @@ class MainWindow(QMainWindow):
         label = getattr(getattr(bot, "_me", None), "username", None)
         return f"@{label}" if label else bot.token[:8]
 
-    async def _do_send_chat(self, bot, uid: int, text: str):
+    async def _do_send_chat(self, bot, uid: int, text: str, photo_path: str = ""):
         conv_token = bot.token
         # Deterministic first: the conversation's own bot. Only if it returns
         # "chat not found" (that bot genuinely has no chat with this user) do we
@@ -406,7 +439,7 @@ class MainWindow(QMainWindow):
         last_err = None
         for cand in candidates:
             try:
-                await self._try_send(cand, uid, text)
+                await self._try_send(cand, uid, text, photo_path=photo_path)
             except Exception as e:
                 last_err = e
                 msg = str(e).lower()
@@ -415,13 +448,18 @@ class MainWindow(QMainWindow):
                 self._append_log(f"❌ 发送失败 [{uid}]: {e}")
                 return
 
-            self._append_log(f"✉ 手动回复 [{uid}]: {text}")
+            if photo_path:
+                record_text = f"[图片] {os.path.basename(photo_path)}" + (f" {text}" if text else "")
+                self._append_log(f"🖼 手动回复图片 [{uid}]: {record_text}")
+            else:
+                record_text = text
+                self._append_log(f"✉ 手动回复 [{uid}]: {text}")
             if cand.token != conv_token:
                 self._append_log(
                     f"ℹ 原会话记录的 Bot 无法送达 [{uid}]，已自动改用 {self._bot_label(cand)} 成功发送，"
                     f"后续该用户的回复将默认走它")
             from bot.handlers import record_bot_reply, get_chat_store
-            cid = record_bot_reply(uid, conv_token, cand, text)
+            cid = record_bot_reply(uid, conv_token, cand, record_text)
             store = get_chat_store()
             self.chat_panel.on_new_message(cid, store)
             return
