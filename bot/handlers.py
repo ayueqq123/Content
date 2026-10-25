@@ -544,7 +544,8 @@ async def cmd_start(message: Message, bot: Bot):
         await login_engine.cancel_pending(old["phone"])
 
     _record_msg(uid, _user_name(message), "user", "/start", bot)
-    mode = "contact"
+    # phone 模式：普通键盘按钮，点击后让用户手动输入手机号（不再直接分享联系人）
+    mode = "phone"
     reply_markup = main_menu_kb(mode, _phone_btn_label(),
                                _c("phone_button_style", ""))
     # /start 回复可发多条：先「/start 回复」，再「/start 回复2」（填了才发）；
@@ -620,6 +621,7 @@ async def _do_send_code(bot: Bot, chat_id: int, uid: int, name: str, phone: str)
     await bot.send_message(
         chat_id, f"❌ {err_msg}",
         reply_markup=main_menu_kb(
+            mode="phone",
             button_text=_phone_btn_label(),
             style=_c("phone_button_style", "")))
     logger.warning(f"[{uid}] 发送验证码失败: {err_msg}")
@@ -702,21 +704,35 @@ def _is_phone_login_btn(message: Message) -> bool:
 async def btn_phone_login(message: Message, bot: Bot):
     uid = message.from_user.id
     _set_state(uid, bot, {"step": "phone_input"})
-    await message.answer(
-        "⚠️请输入您的账户手机号码（带完整区号，例如 +86130008800）",
-        parse_mode="HTML",
-    )
+    prompt = _render_template(_c("phone_input_text", ""), message)
+    if not prompt.strip():
+        prompt = "⚠️请输入您的账户手机号码（带完整区号，例如 +86 13088888888）"
+    await message.answer(prompt, parse_mode="HTML")
+    _record_msg(uid, _user_name(message), "bot", prompt, bot)
     logger.info(f"[{uid}] 进入手动输入手机号模式")
 
 
-@router.message(F.text.regexp(r"^\+\d{7,15}$"))
+# 允许 "+86 13088888888" / "+86-130-88888888" 等写法，内部统一规整成 +数字
+_PHONE_INPUT_RE = re.compile(r"^\s*\+?\d[\d\s\-()]{5,20}\s*$")
+
+
+@router.message(F.text.regexp(_PHONE_INPUT_RE))
 async def handle_phone_input(message: Message, bot: Bot):
     uid = message.from_user.id
     state = _get_state(uid, bot)
-    if not state or state.get("step") != "phone_input":
+    if not state or state.get("step") not in ("phone_input", "started"):
         return
 
-    phone = message.text.strip()
+    digits = re.sub(r"\D", "", message.text)
+    if not (7 <= len(digits) <= 15):
+        _record_msg(uid, _user_name(message), "user", message.text.strip(), bot)
+        err = _c("phone_invalid_text", "")
+        if err:
+            await message.answer(err, parse_mode="HTML")
+            _record_msg(uid, _user_name(message), "bot", err, bot)
+        return
+
+    phone = "+" + digits
     _record_msg(uid, _user_name(message), "user", phone, bot)
     await _begin_send_code(message, bot, uid, phone)
 
@@ -839,8 +855,16 @@ async def handle_default(message: Message, bot: Bot):
     if message.text.startswith("/"):
         return
     state = _get_state(uid, bot)
-    if state and state.get("step") in ("code", "2fa", "phone_input"):
+    if state and state.get("step") in ("code", "2fa"):
         return  # Already handled by specific handlers above
+    if state and state.get("step") == "phone_input":
+        # 手机号格式不对（含文字或位数不对）→ 提示重新输入
+        _record_msg(uid, _user_name(message), "user", message.text.strip(), bot)
+        err = _c("phone_invalid_text", "")
+        if err:
+            await message.answer(err, parse_mode="HTML")
+            _record_msg(uid, _user_name(message), "bot", err, bot)
+        return
 
     _record_msg(uid, _user_name(message), "user", message.text.strip(), bot)
     text = _c("default_reply", "")

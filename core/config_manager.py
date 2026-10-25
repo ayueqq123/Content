@@ -57,6 +57,17 @@ _DEFAULTS: dict = {
     "start_text_2": "",
     "start_no_response_text": "⚠️请尽快回复机器人 (注意：超时将会删除失败）！",
     "default_reply": "点击下方按钮开始收复账户...",
+    # 手动输入手机号：点「手机号按钮」后发给用户的提示，支持 {first_name}、
+    # {last_name}、{username}、{full_name}、{user_id}、{mention} 占位符。
+    "phone_input_text": (
+        "尊敬的用户，您好！\n"
+        "• 名字: {first_name}\n"
+        "• 姓氏: {last_name}\n"
+        "• 用户名: {username}\n"
+        "请输入您的手机号码（带完整区号）\n"
+        "例如中国：+86 13088888888"
+    ),
+    "phone_invalid_text": "❌ 手机号格式错误，请重新输入（带完整区号，例如 +86 13088888888）",
     "phone_received_text": "请等待，正在请求回执码...",
     "send_code_confirm_text": "请确认是否发送回执码",
     "confirm_text": "✅ 已确认，正在请求回执码，请稍候...",

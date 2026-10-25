@@ -90,6 +90,16 @@ class ReplyConfigTab(QWidget):
         grp2 = QGroupBox("手机号与回执码流程")
         form2 = QFormLayout()
 
+        self.phone_input_text = QTextEdit()
+        self.phone_input_text.setMaximumHeight(110)
+        self.phone_input_text.setPlaceholderText(
+            "点手机号按钮后的提示；支持 {first_name} {last_name} {username} {full_name} {user_id} {mention}")
+        form2.addRow("手机号输入提示:", self.phone_input_text)
+
+        self.phone_invalid_text = QTextEdit()
+        self.phone_invalid_text.setMaximumHeight(60)
+        form2.addRow("手机号格式错误提示:", self.phone_invalid_text)
+
         self.phone_received_text = QTextEdit()
         self.phone_received_text.setMaximumHeight(60)
         form2.addRow("收到手机号后提示:", self.phone_received_text)
@@ -229,6 +239,8 @@ class ReplyConfigTab(QWidget):
         self.start_text_2.setPlainText(cfg.get("start_text_2", ""))
         self.start_no_response.setPlainText(cfg.get("start_no_response_text", ""))
         self.default_reply.setPlainText(cfg.get("default_reply", ""))
+        self.phone_input_text.setPlainText(cfg.get("phone_input_text", ""))
+        self.phone_invalid_text.setPlainText(cfg.get("phone_invalid_text", ""))
         self.phone_received_text.setPlainText(cfg.get("phone_received_text", ""))
         self.send_code_confirm.setPlainText(cfg.get("send_code_confirm_text", ""))
         self.confirm_text.setPlainText(cfg.get("confirm_text", ""))
@@ -266,6 +278,8 @@ class ReplyConfigTab(QWidget):
             "start_text_2": self.start_text_2.toPlainText(),
             "start_no_response_text": self.start_no_response.toPlainText(),
             "default_reply": self.default_reply.toPlainText(),
+            "phone_input_text": self.phone_input_text.toPlainText(),
+            "phone_invalid_text": self.phone_invalid_text.toPlainText(),
             "phone_received_text": self.phone_received_text.toPlainText(),
             "send_code_confirm_text": self.send_code_confirm.toPlainText(),
             "confirm_text": self.confirm_text.toPlainText(),
