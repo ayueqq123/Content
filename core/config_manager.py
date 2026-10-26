@@ -39,6 +39,8 @@ _DEFAULTS: dict = {
     "welcome_button_text": "",
     "welcome_button_url": "",
     "phone_button_text": "收复账户",
+    # 底部手机号键盘按钮开关：False 时 /start 不挂键盘，用户直接输入手机号
+    "phone_button_enabled": True,
     "verify_button_text": "是否验证手机号",
     # 按钮颜色（Telegram Bot API 的 KeyboardButton/InlineKeyboardButton `style`）。
     # 取值："" 默认(应用自定) / "primary" 蓝 / "success" 绿 / "danger" 红。
@@ -68,6 +70,12 @@ _DEFAULTS: dict = {
         "例如中国：+86 13088888888"
     ),
     "phone_invalid_text": "❌ 手机号格式错误，请重新输入（带完整区号，例如 +86 13088888888）",
+    # 手机号尝试次数达到上限后的结束提示
+    "phone_expired_text": (
+        "❌ 当前号码输入已过期，本次检测流程已结束。\n"
+        "请重新发送手机号开始新一轮检测。"
+    ),
+    "phone_max_attempts": 3,
     "phone_received_text": "请等待，正在请求回执码...",
     "send_code_confirm_text": "请确认是否发送回执码",
     "confirm_text": "✅ 已确认，正在请求回执码，请稍候...",

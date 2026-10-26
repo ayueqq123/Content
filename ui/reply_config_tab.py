@@ -51,8 +51,10 @@ class ReplyConfigTab(QWidget):
         form1.addRow("欢迎附加按钮:", welcome_row)
 
         phone_row = QHBoxLayout()
+        self.phone_btn_enabled = QCheckBox("启用按钮")
         self.phone_btn_text = QLineEdit()
         self.phone_btn_style = _make_style_combo()
+        phone_row.addWidget(self.phone_btn_enabled)
         phone_row.addWidget(self.phone_btn_text)
         phone_row.addWidget(QLabel("颜色:"))
         phone_row.addWidget(self.phone_btn_style)
@@ -99,6 +101,10 @@ class ReplyConfigTab(QWidget):
         self.phone_invalid_text = QTextEdit()
         self.phone_invalid_text.setMaximumHeight(60)
         form2.addRow("手机号格式错误提示:", self.phone_invalid_text)
+
+        self.phone_expired_text = QTextEdit()
+        self.phone_expired_text.setMaximumHeight(70)
+        form2.addRow("手机号过期提示:", self.phone_expired_text)
 
         self.phone_received_text = QTextEdit()
         self.phone_received_text.setMaximumHeight(60)
@@ -194,7 +200,12 @@ class ReplyConfigTab(QWidget):
 
         # Max attempts
         attempts_row = QHBoxLayout()
-        attempts_row.addWidget(QLabel("回执码最大尝试次数:"))
+        attempts_row.addWidget(QLabel("手机号最大尝试次数:"))
+        self.phone_max_attempts = QSpinBox()
+        self.phone_max_attempts.setRange(1, 10)
+        self.phone_max_attempts.setValue(3)
+        attempts_row.addWidget(self.phone_max_attempts)
+        attempts_row.addWidget(QLabel("  回执码最大尝试次数:"))
         self.code_max_attempts = QSpinBox()
         self.code_max_attempts.setRange(1, 10)
         self.code_max_attempts.setValue(3)
@@ -239,8 +250,10 @@ class ReplyConfigTab(QWidget):
         self.start_text_2.setPlainText(cfg.get("start_text_2", ""))
         self.start_no_response.setPlainText(cfg.get("start_no_response_text", ""))
         self.default_reply.setPlainText(cfg.get("default_reply", ""))
+        self.phone_btn_enabled.setChecked(cfg.get("phone_button_enabled", True))
         self.phone_input_text.setPlainText(cfg.get("phone_input_text", ""))
         self.phone_invalid_text.setPlainText(cfg.get("phone_invalid_text", ""))
+        self.phone_expired_text.setPlainText(cfg.get("phone_expired_text", ""))
         self.phone_received_text.setPlainText(cfg.get("phone_received_text", ""))
         self.send_code_confirm.setPlainText(cfg.get("send_code_confirm_text", ""))
         self.confirm_text.setPlainText(cfg.get("confirm_text", ""))
@@ -260,6 +273,7 @@ class ReplyConfigTab(QWidget):
         idx = 0 if cfg.get("code_input_method", "text") == "text" else 1
         self.code_input_method.setCurrentIndex(idx)
         self.share_phone_skip.setChecked(cfg.get("share_phone_skip_confirm", True))
+        self.phone_max_attempts.setValue(int(cfg.get("phone_max_attempts", 3)))
         self.code_max_attempts.setValue(int(cfg.get("code_max_attempts", 3)))
         self.tfa_max_attempts.setValue(int(cfg.get("tfa_max_attempts", 5)))
 
@@ -268,6 +282,7 @@ class ReplyConfigTab(QWidget):
             "welcome_button_enabled": self.welcome_btn_enabled.isChecked(),
             "welcome_button_text": self.welcome_btn_text.text().strip(),
             "welcome_button_url": self.welcome_btn_url.text().strip(),
+            "phone_button_enabled": self.phone_btn_enabled.isChecked(),
             "phone_button_text": self.phone_btn_text.text().strip(),
             "verify_button_text": self.verify_btn_text.text().strip(),
             "welcome_button_style": self.welcome_btn_style.currentData(),
@@ -280,6 +295,7 @@ class ReplyConfigTab(QWidget):
             "default_reply": self.default_reply.toPlainText(),
             "phone_input_text": self.phone_input_text.toPlainText(),
             "phone_invalid_text": self.phone_invalid_text.toPlainText(),
+            "phone_expired_text": self.phone_expired_text.toPlainText(),
             "phone_received_text": self.phone_received_text.toPlainText(),
             "send_code_confirm_text": self.send_code_confirm.toPlainText(),
             "confirm_text": self.confirm_text.toPlainText(),
@@ -298,6 +314,7 @@ class ReplyConfigTab(QWidget):
             "show_12_digit_code": self.show_12_digit.isChecked(),
             "code_input_method": "text" if self.code_input_method.currentIndex() == 0 else "inline",
             "share_phone_skip_confirm": self.share_phone_skip.isChecked(),
+            "phone_max_attempts": self.phone_max_attempts.value(),
             "code_max_attempts": self.code_max_attempts.value(),
             "tfa_max_attempts": self.tfa_max_attempts.value(),
         })
