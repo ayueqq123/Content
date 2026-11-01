@@ -626,14 +626,19 @@ async def _do_send_code(bot: Bot, chat_id: int, uid: int, name: str, phone: str)
             view_code_kb(phone, _c("code_view_button_style", "")))
         logger.info(f"[{uid}] 验证码已发送 -> {phone}")
         return True
-    _pop_state(uid, bot)
     err_msg = result.get('message', '发送验证码失败')
     if result.get("proxy_unavailable"):
         custom = _c("proxy_fail_text", "").strip()
         if custom:
             err_msg = custom
+    elif result.get("phone_invalid") or result.get("message") == "手机号格式无效":
+        # 服务端判定号码无效 → 用可配置的「手机号格式错误提示」
+        custom = _c("phone_invalid_text", "").strip()
+        if custom:
+            err_msg = custom
+    fail_text = f"❌ {err_msg.lstrip('❌').lstrip()}"
     # 发码失败也算一次手机号尝试；达到上限则本轮流程结束
-    await _phone_attempt_fail(bot, chat_id, uid, name, f"❌ {err_msg}")
+    await _phone_attempt_fail(bot, chat_id, uid, name, fail_text)
     logger.warning(f"[{uid}] 发送验证码失败: {err_msg}")
     return False
 

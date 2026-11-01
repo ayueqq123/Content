@@ -623,7 +623,8 @@ async def send_code(
     except PhoneNumberInvalidError:
         await client.disconnect()
         _cleanup_session_files(sess_path)
-        return {"success": False, "message": "手机号格式无效"}
+        return {"success": False, "message": "手机号格式无效",
+                "phone_invalid": True}
     except ApiIdInvalidError:
         await client.disconnect()
         _cleanup_session_files(sess_path)
