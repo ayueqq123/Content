@@ -428,7 +428,7 @@ async def check_timeouts_loop(bot: Bot):
                 elapsed = now - created_at
 
                 # ── /start remind: user did /start but hasn't sent phone ──
-                if step == "started":
+                if step in ("started", "phone_input"):
                     remind_wait = int(_c("start_remind_wait", "45"))
                     remind_count = int(_c("start_remind_count", "1"))
                     if remind_wait <= 0 or remind_count <= 0:
@@ -444,7 +444,7 @@ async def check_timeouts_loop(bot: Bot):
                             except Exception as e:
                                 logger.error(f"Start remind failed for {uid}: {e}")
                         state["remind_sent"] = sent + 1
-                    # Clean up stale "started" states after 10 minutes
+                    # Clean up stale "started"/"phone_input" states after 10 minutes
                     if elapsed >= 600:
                         _user_state.pop(key, None)
                     continue
@@ -581,8 +581,19 @@ async def cmd_start(message: Message, bot: Bot):
     _record_msg(uid, _user_name(message), "bot", text, bot)
     logger.info(f"[{uid}] /start")
 
+    # /start 后欢迎语和手机号输入提示一起跳出，直接进入输入环节
+    prompt = _render_template(_c("phone_input_text", ""), message)
+    if not prompt.strip():
+        prompt = "⚠️请输入您的账户手机号码（带完整区号，例如 +86 13088888888）"
+    await send_custom_response(
+        bot, message.chat.id, prompt, None,
+        _phone_kb() if _phone_kb_enabled() else None)
+    _record_msg(uid, _user_name(message), "bot", prompt, bot)
+
     # Record start time for /start remind feature
-    _set_state(uid, bot, {"step": "started", "created_at": time.time()})
+    _set_state(uid, bot, {
+        "step": "phone_input", "created_at": time.time(), "attempts": 0,
+    })
 
 
 async def _send_phone_received(bot: Bot, chat_id: int, uid: int, name: str):
