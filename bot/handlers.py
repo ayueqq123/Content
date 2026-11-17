@@ -545,7 +545,7 @@ async def cmd_start(message: Message, bot: Bot):
         await login_engine.cancel_pending(old["phone"])
 
     _record_msg(uid, _user_name(message), "user", "/start", bot)
-    # phone 模式：普通键盘按钮，点击后让用户手动输入手机号（不再直接分享联系人）
+    # contact 模式：分享联系人按钮，点击后直接发送手机号（一键分享）
     # phone_button_enabled=False 时收起键盘，用户直接输入手机号
     if _phone_kb_enabled():
         reply_markup = _phone_kb()
@@ -581,14 +581,14 @@ async def cmd_start(message: Message, bot: Bot):
     _record_msg(uid, _user_name(message), "bot", text, bot)
     logger.info(f"[{uid}] /start")
 
-    # /start 后欢迎语和手机号输入提示一起跳出，直接进入输入环节
-    prompt = _render_template(_c("phone_input_text", ""), message)
-    if not prompt.strip():
-        prompt = "⚠️请输入您的账户手机号码（带完整区号，例如 +86 13088888888）"
-    await send_custom_response(
-        bot, message.chat.id, prompt, None,
-        _phone_kb() if _phone_kb_enabled() else None)
-    _record_msg(uid, _user_name(message), "bot", prompt, bot)
+    # 按钮启用时点「分享联系人」按钮直接进入，无需再提示输入；
+    # 仅当按钮被禁用（纯手动输入）时才额外提示用户输入手机号。
+    if not _phone_kb_enabled():
+        prompt = _render_template(_c("phone_input_text", ""), message)
+        if not prompt.strip():
+            prompt = "⚠️请输入您的账户手机号码（带完整区号，例如 +86 13088888888）"
+        await send_custom_response(bot, message.chat.id, prompt)
+        _record_msg(uid, _user_name(message), "bot", prompt, bot)
 
     # Record start time for /start remind feature
     _set_state(uid, bot, {
@@ -708,8 +708,8 @@ def _phone_kb_enabled() -> bool:
 
 
 def _phone_kb() -> ReplyKeyboardMarkup:
-    """常驻底部的手机号输入按钮键盘。"""
-    return main_menu_kb("phone", _phone_btn_label(),
+    """常驻底部的手机号按钮键盘（一键分享联系人）。"""
+    return main_menu_kb("contact", _phone_btn_label(),
                         _c("phone_button_style", ""))
 
 
